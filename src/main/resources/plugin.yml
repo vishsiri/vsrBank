@@ -1,0 +1,8 @@
+name: vsrBank
+version: '1.0'
+main: dev.visherryz.plugins.vsrbank.VsrBank
+api-version: '1.21'
+authors: [ VisherRyz ]
+website: vishsiri.dev
+depend: ["Vault"]
+softdepend: ["PlaceholderAPI"]

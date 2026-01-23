@@ -1,0 +1,128 @@
+plugins {
+    id 'java'
+    id 'java-library'
+    id("xyz.jpenilla.run-paper") version "2.3.1"
+    id 'com.gradleup.shadow' version '8.3.5'
+}
+
+group = 'dev.visherryz.plugins'
+version = '1.0'
+
+shadowJar {
+    archiveClassifier.set('')
+
+    // 1. GSON
+    relocate 'com.google.gson', 'dev.visherryz.plugins.vsrbank.libs.gson'
+
+    // 2. Lamp (Command Framework)
+    relocate 'revxrsal.commands', 'dev.visherryz.plugins.vsrbank.libs.lamp'
+
+    // 3. Triumph GUI
+    relocate 'dev.triumphteam.gui', 'dev.visherryz.plugins.vsrbank.libs.gui'
+
+    // 4. ConfigLib
+    relocate 'de.exlll.configlib', 'dev.visherryz.plugins.vsrbank.libs.configlib'
+
+    // 5. Jedis (Redis Client)
+    relocate 'redis.clients.jedis', 'dev.visherryz.plugins.vsrbank.libs.jedis'
+    relocate 'org.apache.commons.pool2', 'dev.visherryz.plugins.vsrbank.libs.commons.pool2' // Jedis ใช้ตัวนี้
+
+    // 6. HikariCP (Database Pool)
+    relocate 'com.zaxxer.hikari', 'dev.visherryz.plugins.vsrbank.libs.hikari'
+
+    // 7. MariaDB Driver
+    relocate 'org.mariadb.jdbc', 'dev.visherryz.plugins.vsrbank.libs.mariadb'
+
+    // กรองไฟล์ขยะที่ไม่จำเป็นออก เพื่อลดขนาดไฟล์
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+}
+
+repositories {
+    mavenCentral()
+
+    maven {
+        name = "papermc-repo"
+        url = "https://repo.papermc.io/repository/maven-public/"
+    }
+    maven {
+        name = "TriumphTeam"
+        url = "https://repo.triumphteam.dev/snapshots"
+    }
+    maven {
+        name = "opencollab-snapshot"
+        url = "https://repo.opencollab.dev/main/"
+    }
+    maven { url 'https://jitpack.io' }
+    maven {
+        url = 'https://repo.extendedclip.com/releases/'
+    }
+}
+
+tasks.build {
+    dependsOn shadowJar
+}
+
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:${project.property('paper.version')}"
+
+    compileOnly "org.projectlombok:lombok:${project.property('lombok.version')}"
+    annotationProcessor "org.projectlombok:lombok:${project.property('lombok.version')}"
+
+    implementation "io.github.revxrsal:lamp.common:${project.property('lamp.version')}"
+    implementation "io.github.revxrsal:lamp.bukkit:${project.property('lamp.version')}"
+    implementation "dev.triumphteam:triumph-gui-paper:${project.property('triumph.gui.version')}"
+    implementation "de.exlll:configlib-paper:${project.property('configlib.version')}"
+    implementation "redis.clients:jedis:${project.property('jedis.version')}"
+    implementation "com.zaxxer:HikariCP:${project.property('hikari.version')}"
+    implementation "org.mariadb.jdbc:mariadb-java-client:${project.property('mariadb.version')}"
+    compileOnly "com.github.MilkBowl:VaultAPI:1.7.1"
+    compileOnly "me.clip:placeholderapi:2.11.7"
+}
+
+configurations.configureEach {
+    resolutionStrategy {
+        force 'com.google.code.gson:gson:2.11.0'
+        dependencySubstitution {
+            substitute(module('com.google.code.gson:gson'))
+                    .using(module('com.google.code.gson:gson:2.11.0'))
+        }
+    }
+}
+
+tasks {
+    runServer {
+        // Configure the Minecraft version for our task.
+        // This is the only required configuration besides applying the plugin.
+        // Your plugin's jar (or shadowJar if present) will be used automatically.
+        minecraftVersion("1.21")
+    }
+}
+
+def targetJavaVersion = 21
+java {
+    def javaVersion = JavaVersion.toVersion(targetJavaVersion)
+    sourceCompatibility = javaVersion
+    targetCompatibility = javaVersion
+    if (JavaVersion.current() < javaVersion) {
+        toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+
+    if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible()) {
+        options.release.set(targetJavaVersion)
+    }
+}
+
+processResources {
+    def props = [version: version]
+    inputs.properties props
+    filteringCharset 'UTF-8'
+    filesMatching('plugin.yml') {
+        expand props
+    }
+}
