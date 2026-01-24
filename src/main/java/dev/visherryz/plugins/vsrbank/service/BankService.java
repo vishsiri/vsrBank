@@ -8,7 +8,6 @@ import dev.visherryz.plugins.vsrbank.event.BankPostTransactionEvent;
 import dev.visherryz.plugins.vsrbank.event.BankPreTransactionEvent;
 import dev.visherryz.plugins.vsrbank.model.*;
 import dev.visherryz.plugins.vsrbank.redis.RedisLockService;
-import dev.visherryz.plugins.vsrbank.redis.RedisManager;
 import dev.visherryz.plugins.vsrbank.redis.RedisPubSubService;
 import lombok.RequiredArgsConstructor;
 import net.milkbowl.vault.economy.Economy;

@@ -56,7 +56,7 @@ public class BankCommand {
     @Subcommand("deposit")
     @CommandPermission("vsrbank.deposit")
     public void deposit(Player player,
-                        @Optional Double amount) { // ใช้ Double (Wrapper) เพื่อรองรับ null
+                        @Optional Double amount) {
         if (amount == null) {
             new ChatInputHandler(plugin).requestInput(player, "deposit");
             return;
@@ -106,7 +106,6 @@ public class BankCommand {
                          double amount) {
         if (amount <= 0) { plugin.getMessageUtil().sendInvalidAmount(player); return; }
 
-        // Lamp จัดการหาตัว OfflinePlayer ให้แล้ว แต่เราเช็คเพิ่มอีกนิดว่าเคยเล่นไหม
         if (!target.hasPlayedBefore() && !target.isOnline()) {
             plugin.getMessageUtil().sendPlayerNotFound(player, target.getName());
             return;
@@ -147,7 +146,7 @@ public class BankCommand {
     @Subcommand("admin give")
     @CommandPermission("vsrbank.admin.give")
     public void adminGive(CommandSender sender,
-                          OfflinePlayer target, // ✅ เปลี่ยนเป็น OfflinePlayer
+                          OfflinePlayer target,
                           double amount) {
         if (amount <= 0) { plugin.getMessageUtil().sendInvalidAmount(sender); return; }
 
@@ -157,7 +156,7 @@ public class BankCommand {
     @Subcommand("admin take")
     @CommandPermission("vsrbank.admin.take")
     public void adminTake(CommandSender sender,
-                          OfflinePlayer target, // ✅ เปลี่ยนเป็น OfflinePlayer
+                          OfflinePlayer target,
                           double amount) {
         if (amount <= 0) { plugin.getMessageUtil().sendInvalidAmount(sender); return; }
 
@@ -167,7 +166,7 @@ public class BankCommand {
     @Subcommand("admin set")
     @CommandPermission("vsrbank.admin.set")
     public void adminSet(CommandSender sender,
-                         OfflinePlayer target, // ✅ เปลี่ยนเป็น OfflinePlayer
+                         OfflinePlayer target,
                          double amount) {
         if (amount < 0) { plugin.getMessageUtil().sendInvalidAmount(sender); return; }
 

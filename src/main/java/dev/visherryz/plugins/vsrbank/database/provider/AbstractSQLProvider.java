@@ -108,6 +108,7 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
         }
     }
 
+
     @Override
     public CompletableFuture<Void> shutdown() {
         return CompletableFuture.runAsync(() -> {
@@ -116,19 +117,15 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
                 if (dataSource != null && !dataSource.isClosed()) {
                     dataSource.close();
                 }
-
-                // Shutdown executor with timeout
                 executor.shutdown();
                 if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
                     plugin.getLogger().warning("Database executor didn't terminate in 30s, forcing shutdown");
 
-                    // Force shutdown and get pending tasks
                     List<Runnable> pending = executor.shutdownNow();
                     if (!pending.isEmpty()) {
                         plugin.getLogger().warning("Forced shutdown, " + pending.size() + " tasks cancelled");
                     }
 
-                    // Final wait
                     if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
                         plugin.getLogger().severe("Database executor didn't terminate after force shutdown!");
                     }

@@ -69,6 +69,11 @@ public class RedisManager {
         Config config = new Config();
         config.setCodec(new JsonJacksonCodec());
 
+        // Set password at Config level (not deprecated)
+        if (settings.getPassword() != null && !settings.getPassword().isEmpty()) {
+            config.setPassword(settings.getPassword());
+        }
+
         if (settings.isClusterMode()) {
             configureCluster(config);
         } else {
@@ -94,21 +99,16 @@ public class RedisManager {
             throw new IllegalStateException("Cluster mode enabled but no nodes configured!");
         }
 
-        ClusterServersConfig clusterConfig = config.useClusterServers()
-                .addNodeAddress(nodeAddresses.toArray(new String[0]))
-                .setScanInterval(2000)
-                .setConnectTimeout(settings.getTimeout())
-                .setTimeout(settings.getTimeout())
-                .setRetryAttempts(3)
-                .setRetryInterval(1500)
-                .setMasterConnectionPoolSize(settings.getConnectionPoolSize())
-                .setSlaveConnectionPoolSize(settings.getConnectionPoolSize())
-                .setMasterConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize())
-                .setSlaveConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize());
-
-        if (settings.getPassword() != null && !settings.getPassword().isEmpty()) {
-            clusterConfig.setPassword(settings.getPassword());
-        }
+        ClusterServersConfig clusterConfig = config.useClusterServers();
+        clusterConfig.addNodeAddress(nodeAddresses.toArray(new String[0]));
+        clusterConfig.setScanInterval(2000);
+        clusterConfig.setConnectTimeout(settings.getTimeout());
+        clusterConfig.setTimeout(settings.getTimeout());
+        clusterConfig.setRetryAttempts(3);
+        clusterConfig.setMasterConnectionPoolSize(settings.getConnectionPoolSize());
+        clusterConfig.setSlaveConnectionPoolSize(settings.getConnectionPoolSize());
+        clusterConfig.setMasterConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize());
+        clusterConfig.setSlaveConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize());
 
         plugin.getLogger().info("Redis Cluster configured with " + nodeAddresses.size() + " nodes");
     }
@@ -119,21 +119,15 @@ public class RedisManager {
     private void configureStandalone(Config config) {
         String address = "redis://" + settings.getHost() + ":" + settings.getPort();
 
-        SingleServerConfig serverConfig = config.useSingleServer()
-                .setAddress(address)
-                .setDatabase(settings.getDatabase())
-                .setConnectTimeout(settings.getTimeout())
-                .setTimeout(settings.getTimeout())
-                .setRetryAttempts(3)
-                .setRetryInterval(1500)
-                .setConnectionPoolSize(settings.getConnectionPoolSize())
-                .setConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize())
-                .setPingConnectionInterval(30000)
-                .setKeepAlive(true);
-
-        if (settings.getPassword() != null && !settings.getPassword().isEmpty()) {
-            serverConfig.setPassword(settings.getPassword());
-        }
+        SingleServerConfig serverConfig = config.useSingleServer();
+        serverConfig.setAddress(address);
+        serverConfig.setDatabase(settings.getDatabase());
+        serverConfig.setConnectTimeout(settings.getTimeout());
+        serverConfig.setTimeout(settings.getTimeout());
+        serverConfig.setRetryAttempts(3);
+        serverConfig.setConnectionPoolSize(settings.getConnectionPoolSize());
+        serverConfig.setConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize());
+        serverConfig.setPingConnectionInterval(30000);
 
         plugin.getLogger().info("Redis Standalone configured: " + address);
     }
@@ -194,6 +188,4 @@ public class RedisManager {
 
         return stats.toString();
     }
-
-
 }

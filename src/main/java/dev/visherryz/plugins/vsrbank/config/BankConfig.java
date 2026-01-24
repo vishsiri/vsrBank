@@ -81,6 +81,15 @@ public class BankConfig {
         @Comment("Enable Redis for cross-server sync")
         private boolean enabled = false;
 
+        // ===== Cluster Identifier =====
+        @Comment({
+                "Cluster identifier for Redis pub/sub topics",
+                "Servers with the same cluster ID will share balance updates",
+                "Examples: 'survival', 'creative', 'skyblock'",
+                "Default: uses server-id (recommended for most setups)"
+        })
+        private String clusterId = "";
+
         // ===== Standalone Settings =====
         @Comment("Redis host (standalone mode)")
         private String host = "localhost";
@@ -125,13 +134,6 @@ public class BankConfig {
         // ===== Lock Settings =====
         @Comment("Lock timeout in milliseconds")
         private long lockTimeout = 5000;
-
-        @Comment("Lock retry interval in milliseconds")
-        private long lockRetryInterval = 100;
-
-        // ===== Pub/Sub Settings =====
-        @Comment("Channel name for custom pub/sub messages")
-        private String channel = "vsrbank:sync";
     }
 
     @Getter

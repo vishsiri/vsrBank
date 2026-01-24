@@ -16,7 +16,6 @@ public class BankPostTransactionEvent extends Event {
     private final UUID playerUuid;
     private final String playerName;
 
-    // แก้จาก BankPreTransactionEvent.TransactionType เป็น TransactionLog.TransactionType
     private final TransactionLog.TransactionType type;
 
     private final double amount;
@@ -24,7 +23,7 @@ public class BankPostTransactionEvent extends Event {
     private final double newBalance;
 
     public BankPostTransactionEvent(UUID playerUuid, String playerName,
-                                    TransactionLog.TransactionType type, // แก้ตรงนี้ด้วย
+                                    TransactionLog.TransactionType type,
                                     double amount, double previousBalance, double newBalance) {
         super(true);
         this.playerUuid = playerUuid;

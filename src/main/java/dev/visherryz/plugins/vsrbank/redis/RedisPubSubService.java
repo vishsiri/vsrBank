@@ -7,8 +7,9 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.redisson.api.RTopic;
 import org.redisson.api.listener.MessageListener;
-import org.redisson.codec.JsonJacksonCodec;
+import org.redisson.codec.SerializationCodec;
 
+import java.io.Serializable;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
@@ -24,12 +25,22 @@ public class RedisPubSubService {
     private final RedisManager redisManager;
 
     private RTopic balanceTopic;
-    private RTopic customTopic;
-
     private int balanceListenerId;
-    private int customListenerId;
 
-    private static final String BALANCE_TOPIC = "vsrbank:balance";
+    /**
+     * Get balance topic name based on cluster ID
+     */
+    private String getBalanceTopic() {
+        BankConfig config = plugin.getConfigManager().getConfig();
+        String clusterId = config.getRedis().getClusterId();
+
+        // Default to serverId if clusterId is empty
+        if (clusterId == null || clusterId.isEmpty()) {
+            clusterId = config.getServerId();
+        }
+
+        return "vsrbank:" + clusterId + ":balance";
+    }
 
     /**
      * Initialize subscribers
@@ -41,29 +52,21 @@ public class RedisPubSubService {
         }
 
         String currentServerId = plugin.getConfigManager().getConfig().getServerId();
-        BankConfig.RedisSettings settings = plugin.getConfigManager().getConfig().getRedis();
+        String balanceTopicName = getBalanceTopic();
 
-        // Balance update topic
-        balanceTopic = redisManager.getRedisson().getTopic(BALANCE_TOPIC, new JsonJacksonCodec());
+        // ✅ Use SerializationCodec instead of JsonJacksonCodec
+        balanceTopic = redisManager.getRedisson().getTopic(balanceTopicName, new SerializationCodec());
         balanceListenerId = balanceTopic.addListener(BalanceUpdateMessage.class,
                 (channel, message) -> {
                     // Ignore messages from this server
-                    if (currentServerId.equals(message.sourceServer())) {
+                    if (currentServerId.equals(message.sourceServer)) {
                         return;
                     }
                     handleBalanceUpdate(message);
                 }
         );
 
-        // Custom topic
-        customTopic = redisManager.getRedisson().getTopic(settings.getChannel(), new JsonJacksonCodec());
-        customListenerId = customTopic.addListener(String.class,
-                (channel, message) -> {
-                    handleCustomMessage(message);
-                }
-        );
-
-        plugin.getLogger().info("✅ Subscribed to Redis topics: " + BALANCE_TOPIC + ", " + settings.getChannel());
+        plugin.getLogger().info("✅ Subscribed to Redis topic: " + balanceTopicName);
     }
 
     /**
@@ -74,16 +77,13 @@ public class RedisPubSubService {
             if (balanceTopic != null && balanceListenerId != 0) {
                 balanceTopic.removeListener(balanceListenerId);
             }
-            if (customTopic != null && customListenerId != 0) {
-                customTopic.removeListener(customListenerId);
-            }
         } catch (Exception e) {
             plugin.getLogger().log(Level.WARNING, "Error shutting down pub/sub", e);
         }
     }
 
     /**
-     * Publish balance update to all servers
+     * Publish balance update to all servers in cluster
      */
     public void publishBalanceUpdate(UUID playerUuid, double newBalance) {
         if (!redisManager.isConnected()) {
@@ -105,7 +105,7 @@ public class RedisPubSubService {
     }
 
     /**
-     * Publish custom message
+     * Publish custom message to a specific channel
      */
     public void publish(String channel, Object message) {
         if (!redisManager.isConnected()) {
@@ -114,19 +114,25 @@ public class RedisPubSubService {
 
         CompletableFuture.runAsync(() -> {
             try {
-                RTopic topic = redisManager.getRedisson().getTopic(channel, new JsonJacksonCodec());
+                // ✅ Use SerializationCodec
+                RTopic topic = redisManager.getRedisson().getTopic(channel, new SerializationCodec());
                 topic.publishAsync(message);
             } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "Failed to publish message", e);
+                plugin.getLogger().log(Level.WARNING, "Failed to publish message to " + channel, e);
             }
         });
     }
 
     /**
-     * Subscribe to a topic
+     * Subscribe to a custom topic
      */
     public <T> int subscribe(String channel, Class<T> messageType, MessageListener<T> listener) {
-        RTopic topic = redisManager.getRedisson().getTopic(channel, new JsonJacksonCodec());
+        if (!redisManager.isConnected()) {
+            throw new IllegalStateException("Redis not connected");
+        }
+
+        // ✅ Use SerializationCodec
+        RTopic topic = redisManager.getRedisson().getTopic(channel, new SerializationCodec());
         return topic.addListener(messageType, listener);
     }
 
@@ -134,6 +140,10 @@ public class RedisPubSubService {
      * Unsubscribe from a topic
      */
     public void unsubscribe(String channel, int listenerId) {
+        if (!redisManager.isConnected()) {
+            return;
+        }
+
         RTopic topic = redisManager.getRedisson().getTopic(channel);
         topic.removeListener(listenerId);
     }
@@ -142,13 +152,13 @@ public class RedisPubSubService {
      * Handle balance update from another server
      */
     private void handleBalanceUpdate(BalanceUpdateMessage message) {
-        UUID playerUuid = message.playerUuid();
-        double newBalance = message.newBalance();
+        UUID playerUuid = message.playerUuid;
+        double newBalance = message.newBalance;
 
         Bukkit.getScheduler().runTask(plugin, () -> {
             Player player = Bukkit.getPlayer(playerUuid);
             if (player != null && player.isOnline()) {
-                plugin.getLogger().fine("Received balance update from " + message.sourceServer() +
+                plugin.getLogger().fine("Received balance update from " + message.sourceServer +
                         " for " + player.getName() + ": " + newBalance);
 
                 // Optional: Notify player
@@ -158,14 +168,20 @@ public class RedisPubSubService {
     }
 
     /**
-     * Handle custom messages
-     */
-    private void handleCustomMessage(String message) {
-        plugin.getLogger().fine("Received custom Redis message: " + message);
-    }
-
-    /**
      * Balance update message for pub/sub
+     * ✅ Must implement Serializable for SerializationCodec
      */
-    public record BalanceUpdateMessage(UUID playerUuid, double newBalance, String sourceServer) {}
+    public static class BalanceUpdateMessage implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        public final UUID playerUuid;
+        public final double newBalance;
+        public final String sourceServer;
+
+        public BalanceUpdateMessage(UUID playerUuid, double newBalance, String sourceServer) {
+            this.playerUuid = playerUuid;
+            this.newBalance = newBalance;
+            this.sourceServer = sourceServer;
+        }
+    }
 }
