@@ -11,29 +11,12 @@ version = '1.0'
 shadowJar {
     archiveClassifier.set('')
 
-    // 1. GSON
     relocate 'com.google.gson', 'dev.visherryz.plugins.vsrbank.libs.gson'
-
-    // 2. Lamp (Command Framework)
     relocate 'revxrsal.commands', 'dev.visherryz.plugins.vsrbank.libs.lamp'
-
-    // 3. Triumph GUI
     relocate 'dev.triumphteam.gui', 'dev.visherryz.plugins.vsrbank.libs.gui'
-
-    // 4. ConfigLib
     relocate 'de.exlll.configlib', 'dev.visherryz.plugins.vsrbank.libs.configlib'
-
-    // 5. Jedis (Redis Client)
-    relocate 'redis.clients.jedis', 'dev.visherryz.plugins.vsrbank.libs.jedis'
-    relocate 'org.apache.commons.pool2', 'dev.visherryz.plugins.vsrbank.libs.commons.pool2' // Jedis ใช้ตัวนี้
-
-    // 6. HikariCP (Database Pool)
     relocate 'com.zaxxer.hikari', 'dev.visherryz.plugins.vsrbank.libs.hikari'
 
-    // 7. MariaDB Driver
-    relocate 'org.mariadb.jdbc', 'dev.visherryz.plugins.vsrbank.libs.mariadb'
-
-    // กรองไฟล์ขยะที่ไม่จำเป็นออก เพื่อลดขนาดไฟล์
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'
     exclude 'META-INF/*.RSA'
@@ -69,24 +52,24 @@ dependencies {
 
     compileOnly "org.projectlombok:lombok:${project.property('lombok.version')}"
     annotationProcessor "org.projectlombok:lombok:${project.property('lombok.version')}"
-
+    implementation "com.google.code.gson:gson:${project.property('json.version')}"
     implementation "io.github.revxrsal:lamp.common:${project.property('lamp.version')}"
     implementation "io.github.revxrsal:lamp.bukkit:${project.property('lamp.version')}"
     implementation "dev.triumphteam:triumph-gui-paper:${project.property('triumph.gui.version')}"
     implementation "de.exlll:configlib-paper:${project.property('configlib.version')}"
-    implementation("org.redisson:redisson:4.1.0")
+    implementation("org.redisson:redisson:${project.property('redisson.version')}")
     implementation "com.zaxxer:HikariCP:${project.property('hikari.version')}"
     implementation "org.mariadb.jdbc:mariadb-java-client:${project.property('mariadb.version')}"
-    compileOnly "com.github.MilkBowl:VaultAPI:1.7.1"
-    compileOnly "me.clip:placeholderapi:2.11.7"
+    compileOnly "com.github.MilkBowl:VaultAPI:${project.property('vault.version')}"
+    compileOnly "me.clip:placeholderapi:${project.property('placeholderapi.version')}"
 }
 
 configurations.configureEach {
     resolutionStrategy {
-        force 'com.google.code.gson:gson:2.11.0'
+        force "com.google.code.gson:gson:${project.property('json.version')}"
         dependencySubstitution {
-            substitute(module('com.google.code.gson:gson'))
-                    .using(module('com.google.code.gson:gson:2.11.0'))
+            substitute(module("com.google.code.gson:gson:${project.property('json.version')}"))
+                    .using(module("com.google.code.gson:gson:${project.property('json.version')}"))
         }
     }
 }

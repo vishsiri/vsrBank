@@ -22,6 +22,7 @@ public class MariaDBProvider extends AbstractSQLProvider {
         );
 
         config.setJdbcUrl(jdbcUrl);
+        config.setDriverClassName("org.mariadb.jdbc.Driver");
         config.setUsername(settings.getUsername());
         config.setPassword(settings.getPassword());
 
