@@ -68,4 +68,4 @@ VsrBank provides a robust **Asynchronous API** via `CompletableFuture`.
 * `BankPostTransactionEvent`
 * `BankLevelUpEvent`
 
-**Developed with ❤️ by Visherryz**
+**Developed with ❤️ by VisherRyz**
