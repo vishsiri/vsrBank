@@ -35,7 +35,7 @@ Built with maintainability and performance in mind using modern libraries:
 
 * **Lombok:** Boilerplate reduction.
 * **HikariCP:** High-performance JDBC connection pooling.
-* **Jedis:** Redis client for Pub/Sub and Locking.
+* **Redisson:** Advanced Redis client for Distributed Locks & Pub/Sub.
 * **Revxrsal Lamp:** Annotation-driven command framework.
 * **Triumph-GUI:** Fluent GUI creation.
 * **ConfigLib:** Object-mapped configuration management.
