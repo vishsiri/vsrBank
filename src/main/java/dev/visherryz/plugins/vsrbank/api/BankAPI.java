@@ -3,7 +3,6 @@ package dev.visherryz.plugins.vsrbank.api;
 import dev.visherryz.plugins.vsrbank.VsrBank;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import dev.visherryz.plugins.vsrbank.model.BankResult;
-import dev.visherryz.plugins.vsrbank.model.TransactionResponse;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -78,7 +77,7 @@ public class BankAPI {
                     }
 
                     // Publish to Redis for cross-server sync
-                    plugin.getRedisManager().publishBalanceUpdate(uuid, newBalance);
+                    plugin.getRedisPubSubService().publishBalanceUpdate(uuid, newBalance);
 
                     return BankResult.SUCCESS;
                 });
@@ -113,7 +112,7 @@ public class BankAPI {
                                     return BankResult.DATABASE_ERROR;
                                 }
 
-                                plugin.getRedisManager().publishBalanceUpdate(uuid, newBalance);
+                                plugin.getRedisPubSubService().publishBalanceUpdate(uuid, newBalance);
                                 return BankResult.SUCCESS;
                             });
                 });
@@ -140,9 +139,9 @@ public class BankAPI {
                     if (success) {
                         // Get new balances for Redis sync
                         plugin.getDatabaseManager().getProvider().getBalance(fromUuid)
-                                .thenAccept(bal -> plugin.getRedisManager().publishBalanceUpdate(fromUuid, bal));
+                                .thenAccept(bal -> plugin.getRedisPubSubService().publishBalanceUpdate(fromUuid, bal));
                         plugin.getDatabaseManager().getProvider().getBalance(toUuid)
-                                .thenAccept(bal -> plugin.getRedisManager().publishBalanceUpdate(toUuid, bal));
+                                .thenAccept(bal -> plugin.getRedisPubSubService().publishBalanceUpdate(toUuid, bal));
                         return BankResult.SUCCESS;
                     }
                     return BankResult.INSUFFICIENT_FUNDS;
@@ -164,7 +163,7 @@ public class BankAPI {
         return plugin.getDatabaseManager().getProvider().setBalance(uuid, amount)
                 .thenApply(success -> {
                     if (success) {
-                        plugin.getRedisManager().publishBalanceUpdate(uuid, amount);
+                        plugin.getRedisPubSubService().publishBalanceUpdate(uuid, amount);
                         return BankResult.SUCCESS;
                     }
                     return BankResult.ACCOUNT_NOT_FOUND;

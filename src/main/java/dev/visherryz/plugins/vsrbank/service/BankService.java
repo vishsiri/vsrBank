@@ -7,7 +7,9 @@ import dev.visherryz.plugins.vsrbank.event.BankLevelUpEvent;
 import dev.visherryz.plugins.vsrbank.event.BankPostTransactionEvent;
 import dev.visherryz.plugins.vsrbank.event.BankPreTransactionEvent;
 import dev.visherryz.plugins.vsrbank.model.*;
+import dev.visherryz.plugins.vsrbank.redis.RedisLockService;
 import dev.visherryz.plugins.vsrbank.redis.RedisManager;
+import dev.visherryz.plugins.vsrbank.redis.RedisPubSubService;
 import lombok.RequiredArgsConstructor;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
@@ -19,8 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 
 /**
  * Core Bank Service - handles all banking business logic
@@ -38,8 +39,12 @@ public class BankService {
         return plugin.getDatabaseManager().getProvider();
     }
 
-    private RedisManager getRedis() {
-        return plugin.getRedisManager();
+    private RedisPubSubService getRedisPubSub() {
+        return plugin.getRedisPubSubService();
+    }
+
+    public void clearCooldown(UUID uuid) {
+        cooldowns.remove(uuid);
     }
 
     private Economy getEconomy() {
@@ -54,15 +59,15 @@ public class BankService {
 
     /**
      * Fire pre-transaction event and check if cancelled
-     * @return true if event was NOT cancelled (transaction can proceed)
+     * @return true if event was cancelled (transaction should stop)
      */
-    private boolean firePreTransactionEvent(UUID uuid, String playerName,
-                                            TransactionLog.TransactionType type,
-                                            double amount, double currentBalance) {
+    private boolean isTransactionCancelled(UUID uuid, String playerName,
+                                           TransactionLog.TransactionType type,
+                                           double amount, double currentBalance) {
         BankPreTransactionEvent event = new BankPreTransactionEvent(
                 uuid, playerName, type, amount, currentBalance);
         Bukkit.getPluginManager().callEvent(event);
-        return !event.isCancelled();
+        return event.isCancelled();
     }
 
     /**
@@ -160,7 +165,7 @@ public class BankService {
                 double previousBalance = account.getBalance();
 
                 // Fire Pre-Transaction Event
-                if (!firePreTransactionEvent(uuid, player.getName(),
+                if (isTransactionCancelled(uuid, player.getName(),
                         TransactionLog.TransactionType.DEPOSIT, amount, previousBalance)) {
                     return CompletableFuture.completedFuture(
                             TransactionResponse.failure(BankResult.TRANSACTION_LOCKED)); // Event cancelled
@@ -195,7 +200,7 @@ public class BankService {
                     getDatabase().insertLog(log);
 
                     // Publish to Redis
-                    getRedis().publishBalanceUpdate(uuid, newBalance);
+                    getRedisPubSub().publishBalanceUpdate(uuid, newBalance);
 
                     // Fire Post-Transaction Event
                     firePostTransactionEvent(uuid, player.getName(),
@@ -243,7 +248,7 @@ public class BankService {
                 double previousBalance = account.getBalance();
 
                 // Fire Pre-Transaction Event
-                if (!firePreTransactionEvent(uuid, player.getName(),
+                if (isTransactionCancelled(uuid, player.getName(),
                         TransactionLog.TransactionType.WITHDRAW, amount, previousBalance)) {
                     return CompletableFuture.completedFuture(
                             TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
@@ -270,7 +275,7 @@ public class BankService {
                     getDatabase().insertLog(log);
 
                     // Publish to Redis
-                    getRedis().publishBalanceUpdate(uuid, newBalance);
+                    getRedisPubSub().publishBalanceUpdate(uuid, newBalance);
 
                     // Fire Post-Transaction Event
                     firePostTransactionEvent(uuid, player.getName(),
@@ -339,7 +344,7 @@ public class BankService {
                     double receiverBefore = receiverAccount.getBalance();
 
                     // Fire Pre-Transaction Event for sender
-                    if (!firePreTransactionEvent(senderUuid, sender.getName(),
+                    if (isTransactionCancelled(senderUuid, sender.getName(),
                             TransactionLog.TransactionType.TRANSFER_OUT, totalDeduct, senderBefore)) {
                         return CompletableFuture.completedFuture(
                                 TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
@@ -399,8 +404,8 @@ public class BankService {
                             }
 
                             // Publish to Redis
-                            getRedis().publishBalanceUpdate(senderUuid, senderAfter);
-                            getRedis().publishBalanceUpdate(receiverUuid, receiverAfter);
+                            getRedisPubSub().publishBalanceUpdate(senderUuid, senderAfter);
+                            getRedisPubSub().publishBalanceUpdate(receiverUuid, receiverAfter);
 
                             // Fire Post-Transaction Events
                             firePostTransactionEvent(senderUuid, sender.getName(),
@@ -452,7 +457,7 @@ public class BankService {
                 double previousBalance = account.getBalance();
 
                 // Fire Pre-Transaction Event
-                if (!firePreTransactionEvent(uuid, player.getName(),
+                if (isTransactionCancelled(uuid, player.getName(),
                         TransactionLog.TransactionType.UPGRADE, upgradeCost, previousBalance)) {
                     return CompletableFuture.completedFuture(
                             TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
@@ -501,7 +506,7 @@ public class BankService {
                         getDatabase().insertLog(log);
 
                         // Publish to Redis
-                        getRedis().publishBalanceUpdate(uuid, newBalance);
+                        getRedisPubSub().publishBalanceUpdate(uuid, newBalance);
 
                         // Fire Post-Transaction Event
                         firePostTransactionEvent(uuid, player.getName(),
@@ -547,7 +552,7 @@ public class BankService {
                     plugin.getDiscordWebhook().sendAdminAction(adminName, "GIVE", targetName, amount);
 
                     // Publish
-                    getRedis().publishBalanceUpdate(targetUuid, newBalance);
+                    getRedisPubSub().publishBalanceUpdate(targetUuid, newBalance);
 
                     // Fire Post Event
                     firePostTransactionEvent(targetUuid, targetName,
@@ -583,7 +588,7 @@ public class BankService {
                     getDatabase().insertLog(log);
 
                     plugin.getDiscordWebhook().sendAdminAction(adminName, "TAKE", targetName, actualAmount);
-                    getRedis().publishBalanceUpdate(targetUuid, newBalance);
+                    getRedisPubSub().publishBalanceUpdate(targetUuid, newBalance);
 
                     firePostTransactionEvent(targetUuid, targetName,
                             TransactionLog.TransactionType.ADMIN_TAKE, actualAmount, previousBalance, newBalance);
@@ -617,7 +622,7 @@ public class BankService {
                     getDatabase().insertLog(log);
 
                     plugin.getDiscordWebhook().sendAdminAction(adminName, "SET", targetName, amount);
-                    getRedis().publishBalanceUpdate(targetUuid, amount);
+                    getRedisPubSub().publishBalanceUpdate(targetUuid, amount);
 
                     firePostTransactionEvent(targetUuid, targetName,
                             TransactionLog.TransactionType.ADMIN_SET, amount, previousBalance, amount);
@@ -668,19 +673,26 @@ public class BankService {
 
     @SuppressWarnings("unchecked")
     private <T> CompletableFuture<T> executeWithLock(UUID uuid, java.util.function.Supplier<CompletableFuture<T>> operation) {
-        RedisManager redis = getRedis();
+        RedisLockService lockService = plugin.getRedisLockService();
 
-        if (!redis.isConnected()) {
+        if (!plugin.getRedisManager().isConnected()) {
             return operation.get();
         }
 
-        String lockToken = redis.acquireLock(uuid);
-        if (lockToken == null) {
-            return CompletableFuture.completedFuture((T) TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
-        }
+        return lockService.withLockAsync(uuid, 5, TimeUnit.SECONDS, operation)
+                .exceptionally(error -> {
+                    // Lock failed
+                    return (T) TransactionResponse.failure(BankResult.TRANSACTION_LOCKED);
+                });
+    }
 
-        return operation.get().whenComplete((result, throwable) -> {
-            redis.releaseLock(uuid, lockToken);
-        });
+    private <T> CompletableFuture<T> withTimeout(CompletableFuture<T> future, long timeout, TimeUnit unit) {
+        return future.orTimeout(timeout, unit)
+                .exceptionally(ex -> {
+                    if (ex instanceof TimeoutException) {
+                        plugin.getLogger().warning("Operation timed out after " + timeout + " " + unit);
+                    }
+                    throw new CompletionException(ex);
+                });
     }
 }

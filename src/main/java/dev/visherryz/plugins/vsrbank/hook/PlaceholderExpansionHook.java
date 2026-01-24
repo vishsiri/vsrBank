@@ -36,9 +36,10 @@ public class PlaceholderExpansionHook extends PlaceholderExpansion {
 
     @Override
     public @NotNull String getAuthor() {
-        return "Visherryz";
+        return "VisherRyz";
     }
 
+    @SuppressWarnings("deprecation")
     @Override
     public @NotNull String getVersion() {
         return plugin.getDescription().getVersion();

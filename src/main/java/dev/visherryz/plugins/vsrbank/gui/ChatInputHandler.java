@@ -27,7 +27,7 @@ public class ChatInputHandler {
     private final VsrBank plugin;
 
     // Pending inputs: player UUID -> input type
-    private static final Map<UUID, InputSession> pendingSessions = new ConcurrentHashMap<>();
+    private final Map<UUID, InputSession> pendingSessions = new ConcurrentHashMap<>();
 
     public ChatInputHandler(VsrBank plugin) {
         this.plugin = plugin;
@@ -68,6 +68,18 @@ public class ChatInputHandler {
 
         InputSession session = new InputSession(InputType.TRANSFER_AMOUNT, "transfer", targetUuid, targetName);
         startSession(player, session);
+    }
+
+    public void clearAllSessions() {
+        pendingSessions.values().forEach(session -> {
+            if (session.listener != null) {
+                HandlerList.unregisterAll(session.listener);
+            }
+            if (session.timeoutTask != null) {
+                session.timeoutTask.cancel();
+            }
+        });
+        pendingSessions.clear();
     }
 
     private void startSession(Player player, InputSession session) {

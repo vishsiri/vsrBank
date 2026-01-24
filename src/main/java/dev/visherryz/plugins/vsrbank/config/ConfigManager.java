@@ -32,7 +32,7 @@ public class ConfigManager {
                 .charset(StandardCharsets.UTF_8)
                 .header("""
                         ╔═══════════════════════════════════════════════════════════════╗
-                        ║                     VsrBank Configuration                      ║
+                        ║                     VsrBank Configuration                     ║
                         ║                                                               ║
                         ║  Supports MiniMessage format for colors and gradients         ║
                         ║  Example: <gradient:#FFD700:#FFA500>Text</gradient>           ║
@@ -56,16 +56,14 @@ public class ConfigManager {
         this.config = YamlConfigurations.update(
                 configFile.toPath(),
                 BankConfig.class,
-                properties // ใช้ properties ตัวบนที่ประกาศใน Constructor
+                properties
         );
 
-        // 2. Load Messages Config
-        // สร้าง Properties แยกสำหรับ Messages โดยเฉพาะ เพื่อใส่ Header ของ Messages
         YamlConfigurationProperties messageProperties = YamlConfigurationProperties.newBuilder()
-                .charset(StandardCharsets.UTF_8) // บังคับ UTF-8
+                .charset(StandardCharsets.UTF_8)
                 .header("""
                         ╔═══════════════════════════════════════════════════════════════╗
-                        ║                      VsrBank Messages                          ║
+                        ║                      VsrBank Messages                         ║
                         ║                                                               ║
                         ║  Supports MiniMessage format for colors and formatting        ║
                         ║  Placeholders: {player}, {amount}, {balance}, etc.            ║
@@ -92,7 +90,7 @@ public class ConfigManager {
         } catch (Exception e) {
             plugin.getLogger().severe("Failed to reload configurations! Please check your YAML syntax.");
             plugin.getLogger().severe("Error: " + e.getMessage());
-            e.printStackTrace(); // ปริ้นท์ Error ออกมาดูว่าผิดบรรทัดไหน
+            e.printStackTrace();
         }
     }
 

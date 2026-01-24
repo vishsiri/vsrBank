@@ -81,34 +81,56 @@ public class BankConfig {
         @Comment("Enable Redis for cross-server sync")
         private boolean enabled = false;
 
-        @Comment("Redis host")
+        // ===== Standalone Settings =====
+        @Comment("Redis host (standalone mode)")
         private String host = "localhost";
 
-        @Comment("Redis port")
+        @Comment("Redis port (standalone mode)")
         private int port = 6379;
 
         @Comment("Redis password (leave empty if none)")
         private String password = "";
 
-        @Comment("Redis database index")
+        @Comment("Redis database index (standalone mode only)")
         private int database = 0;
 
+        // ===== Cluster Settings =====
         @Comment("Enable Redis Cluster mode")
         private boolean clusterMode = false;
 
-        @Comment("Cluster nodes (only used if clusterMode is true)")
-        private List<String> clusterNodes = List.of("localhost:7000", "localhost:7001", "localhost:7002");
+        @Comment({
+                "Cluster nodes (only used if clusterMode is true)",
+                "Format: host:port",
+                "Example: node1:7000, node2:7001, node3:7002"
+        })
+        private List<String> clusterNodes = List.of(
+                "localhost:7000",
+                "localhost:7001",
+                "localhost:7002",
+                "localhost:7003",
+                "localhost:7004",
+                "localhost:7005"
+        );
 
-        @Comment("Connection pool size")
-        private int poolSize = 8;
+        // ===== Connection Pool Settings =====
+        @Comment("Connection pool size (recommended: 64 for production)")
+        private int connectionPoolSize = 64;
 
+        @Comment("Minimum idle connections (recommended: 10)")
+        private int connectionMinimumIdleSize = 10;
+
+        @Comment("Connection timeout in milliseconds")
+        private int timeout = 3000;
+
+        // ===== Lock Settings =====
         @Comment("Lock timeout in milliseconds")
         private long lockTimeout = 5000;
 
         @Comment("Lock retry interval in milliseconds")
         private long lockRetryInterval = 100;
 
-        @Comment("Channel name for pub/sub")
+        // ===== Pub/Sub Settings =====
+        @Comment("Channel name for custom pub/sub messages")
         private String channel = "vsrbank:sync";
     }
 

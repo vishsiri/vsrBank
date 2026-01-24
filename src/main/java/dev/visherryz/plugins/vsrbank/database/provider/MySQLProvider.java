@@ -4,16 +4,10 @@ import com.zaxxer.hikari.HikariConfig;
 import dev.visherryz.plugins.vsrbank.VsrBank;
 import dev.visherryz.plugins.vsrbank.config.BankConfig;
 
-/**
- * MySQL/MariaDB database provider
- */
 public class MySQLProvider extends AbstractSQLProvider {
 
-    private final boolean isMariaDB;
-
-    public MySQLProvider(VsrBank plugin, BankConfig.DatabaseSettings settings, boolean isMariaDB) {
+    public MySQLProvider(VsrBank plugin, BankConfig.DatabaseSettings settings) {
         super(plugin, settings);
-        this.isMariaDB = isMariaDB;
     }
 
     @Override
@@ -31,17 +25,13 @@ public class MySQLProvider extends AbstractSQLProvider {
         config.setUsername(settings.getUsername());
         config.setPassword(settings.getPassword());
 
-        // HikariCP settings
         config.setMaximumPoolSize(settings.getMaxPoolSize());
         config.setMinimumIdle(settings.getMinIdle());
         config.setConnectionTimeout(settings.getConnectionTimeout());
         config.setIdleTimeout(settings.getIdleTimeout());
         config.setMaxLifetime(settings.getMaxLifetime());
-
-        // Pool name
         config.setPoolName("VsrBank-MySQL-Pool");
 
-        // MySQL specific optimizations
         config.addDataSourceProperty("cachePrepStmts", "true");
         config.addDataSourceProperty("prepStmtCacheSize", "250");
         config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
@@ -103,6 +93,6 @@ public class MySQLProvider extends AbstractSQLProvider {
 
     @Override
     public String getDatabaseType() {
-        return isMariaDB ? "MariaDB" : "MySQL";
+        return "MySQL";
     }
 }

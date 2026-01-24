@@ -1,65 +1,42 @@
 package dev.visherryz.plugins.vsrbank.redis;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.TypeAdapter;
-import com.google.gson.stream.JsonReader;
-import com.google.gson.stream.JsonToken;
-import com.google.gson.stream.JsonWriter;
 import dev.visherryz.plugins.vsrbank.VsrBank;
 import dev.visherryz.plugins.vsrbank.config.BankConfig;
 import lombok.Getter;
-import redis.clients.jedis.*;
-import redis.clients.jedis.params.SetParams;
+import org.redisson.Redisson;
+import org.redisson.api.RedissonClient;
+import org.redisson.codec.JsonJacksonCodec;
+import org.redisson.config.ClusterServersConfig;
+import org.redisson.config.Config;
+import org.redisson.config.SingleServerConfig;
 
-import java.io.IOException;
-import java.time.Instant;
-import java.util.UUID;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.function.Supplier;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
- * Manages Redis connection for cross-server synchronization
- * Implements Distributed Locking (Redlock pattern) for transaction safety
+ * Core Redis Connection Manager
+ * Handles connection lifecycle only
  */
 public class RedisManager {
 
     private final VsrBank plugin;
     private final BankConfig.RedisSettings settings;
-    private final Gson gson;
-    private final ExecutorService executor;
 
     @Getter
-    private JedisPool jedisPool;
+    private RedissonClient redisson;
 
     @Getter
     private boolean connected = false;
 
-    private RedisSubscriber subscriber;
-    private Thread subscriberThread;
-
-    // Lock prefix for Redis keys
-    private static final String LOCK_PREFIX = "vsrbank:lock:";
-    private static final String BALANCE_CHANNEL = "vsrbank:balance";
-
     public RedisManager(VsrBank plugin) {
         this.plugin = plugin;
         this.settings = plugin.getConfigManager().getConfig().getRedis();
-        this.gson = new GsonBuilder()
-                .registerTypeAdapter(Instant.class, new InstantTypeAdapter())
-                .create();
-        this.executor = Executors.newFixedThreadPool(4, r -> {
-            Thread t = new Thread(r, "VsrBank-Redis-Worker");
-            t.setDaemon(true);
-            return t;
-        });
     }
 
     /**
-     * Initialize Redis connection
+     * Initialize Redisson connection
      */
     public CompletableFuture<Void> initialize() {
         if (!settings.isEnabled()) {
@@ -69,243 +46,154 @@ public class RedisManager {
 
         return CompletableFuture.runAsync(() -> {
             try {
-                JedisPoolConfig poolConfig = new JedisPoolConfig();
-                poolConfig.setMaxTotal(settings.getPoolSize());
-                poolConfig.setMaxIdle(settings.getPoolSize());
-                poolConfig.setMinIdle(2);
-                poolConfig.setTestOnBorrow(true);
-                poolConfig.setTestOnReturn(true);
-                poolConfig.setTestWhileIdle(true);
-
-                if (settings.getPassword() != null && !settings.getPassword().isEmpty()) {
-                    jedisPool = new JedisPool(poolConfig, settings.getHost(), settings.getPort(),
-                            2000, settings.getPassword(), settings.getDatabase());
-                } else {
-                    jedisPool = new JedisPool(poolConfig, settings.getHost(), settings.getPort(),
-                            2000, null, settings.getDatabase());
-                }
+                Config config = createRedissonConfig();
+                redisson = Redisson.create(config);
 
                 // Test connection
-                try (Jedis jedis = jedisPool.getResource()) {
-                    jedis.ping();
-                }
+                redisson.getKeys().count();
 
                 connected = true;
-                plugin.getLogger().info("Redis connected: " + settings.getHost() + ":" + settings.getPort());
-
-                // Start subscriber for real-time updates
-                startSubscriber();
+                plugin.getLogger().info("✅ Redisson connected successfully");
 
             } catch (Exception e) {
                 plugin.getLogger().log(Level.SEVERE, "Failed to connect to Redis", e);
                 connected = false;
             }
-        }, executor);
-    }
-
-    /**
-     * Start the pub/sub subscriber
-     */
-    private void startSubscriber() {
-        subscriber = new RedisSubscriber(plugin, gson);
-        subscriberThread = new Thread(() -> {
-            try (Jedis jedis = jedisPool.getResource()) {
-                jedis.subscribe(subscriber, settings.getChannel(), BALANCE_CHANNEL);
-            } catch (Exception e) {
-                if (connected) {
-                    plugin.getLogger().log(Level.WARNING, "Redis subscriber disconnected", e);
-                }
-            }
-        }, "VsrBank-Redis-Subscriber");
-        subscriberThread.setDaemon(true);
-        subscriberThread.start();
-    }
-
-    /**
-     * Shutdown Redis connection
-     */
-    public CompletableFuture<Void> shutdown() {
-        return CompletableFuture.runAsync(() -> {
-            connected = false;
-
-            if (subscriber != null) {
-                try {
-                    subscriber.unsubscribe();
-                } catch (Exception ignored) {}
-            }
-
-            if (subscriberThread != null) {
-                subscriberThread.interrupt();
-            }
-
-            if (jedisPool != null && !jedisPool.isClosed()) {
-                jedisPool.close();
-            }
-
-            executor.shutdown();
-            plugin.getLogger().info("Redis connection closed");
         });
     }
 
-    // ==================== Distributed Locking ====================
-
     /**
-     * Acquire a distributed lock for a player's transaction
-     * Prevents race conditions across multiple servers
-     *
-     * @param playerUuid Player UUID to lock
-     * @return Lock token if acquired, null if failed
+     * Create Redisson configuration
      */
-    public String acquireLock(UUID playerUuid) {
-        if (!connected || jedisPool == null) {
-            return UUID.randomUUID().toString(); // Fallback: no Redis, no lock needed
+    private Config createRedissonConfig() {
+        Config config = new Config();
+        config.setCodec(new JsonJacksonCodec());
+
+        if (settings.isClusterMode()) {
+            configureCluster(config);
+        } else {
+            configureStandalone(config);
         }
 
-        String lockKey = LOCK_PREFIX + playerUuid.toString();
-        String lockToken = UUID.randomUUID().toString();
-        long lockTimeout = settings.getLockTimeout();
-        long retryInterval = settings.getLockRetryInterval();
-        long startTime = System.currentTimeMillis();
+        // Thread pool settings
+        config.setThreads(16);
+        config.setNettyThreads(32);
 
-        try (Jedis jedis = jedisPool.getResource()) {
-            while (System.currentTimeMillis() - startTime < lockTimeout) {
-                // Try to acquire lock with SET NX EX
-                SetParams params = SetParams.setParams().nx().px(lockTimeout);
-                String result = jedis.set(lockKey, lockToken, params);
-
-                if ("OK".equals(result)) {
-                    return lockToken; // Lock acquired!
-                }
-
-                // Wait before retry
-                try {
-                    Thread.sleep(retryInterval);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return null;
-                }
-            }
-        } catch (Exception e) {
-            plugin.getLogger().log(Level.WARNING, "Failed to acquire Redis lock", e);
-        }
-
-        return null; // Failed to acquire lock
+        return config;
     }
 
     /**
-     * Release a distributed lock
-     *
-     * @param playerUuid Player UUID
-     * @param lockToken Token received when lock was acquired
+     * Configure cluster mode
      */
-    public void releaseLock(UUID playerUuid, String lockToken) {
-        if (!connected || jedisPool == null || lockToken == null) {
-            return;
+    private void configureCluster(Config config) {
+        List<String> nodeAddresses = settings.getClusterNodes().stream()
+                .map(node -> "redis://" + node)
+                .toList();
+
+        if (nodeAddresses.isEmpty()) {
+            throw new IllegalStateException("Cluster mode enabled but no nodes configured!");
         }
 
-        String lockKey = LOCK_PREFIX + playerUuid.toString();
+        ClusterServersConfig clusterConfig = config.useClusterServers()
+                .addNodeAddress(nodeAddresses.toArray(new String[0]))
+                .setScanInterval(2000)
+                .setConnectTimeout(settings.getTimeout())
+                .setTimeout(settings.getTimeout())
+                .setRetryAttempts(3)
+                .setRetryInterval(1500)
+                .setMasterConnectionPoolSize(settings.getConnectionPoolSize())
+                .setSlaveConnectionPoolSize(settings.getConnectionPoolSize())
+                .setMasterConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize())
+                .setSlaveConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize());
 
-        try (Jedis jedis = jedisPool.getResource()) {
-            // Only release if we own the lock (compare token)
-            String script = """
-                if redis.call('get', KEYS[1]) == ARGV[1] then
-                    return redis.call('del', KEYS[1])
-                else
-                    return 0
-                end
-                """;
-            jedis.eval(script, 1, lockKey, lockToken);
-        } catch (Exception e) {
-            plugin.getLogger().log(Level.WARNING, "Failed to release Redis lock", e);
+        if (settings.getPassword() != null && !settings.getPassword().isEmpty()) {
+            clusterConfig.setPassword(settings.getPassword());
         }
+
+        plugin.getLogger().info("Redis Cluster configured with " + nodeAddresses.size() + " nodes");
     }
 
     /**
-     * Execute an operation with distributed lock
+     * Configure standalone mode
      */
-    public <T> CompletableFuture<T> withLock(UUID playerUuid, Supplier<T> operation) {
-        return CompletableFuture.supplyAsync(() -> {
-            String lockToken = acquireLock(playerUuid);
-            if (lockToken == null) {
-                throw new RuntimeException("Failed to acquire transaction lock");
-            }
+    private void configureStandalone(Config config) {
+        String address = "redis://" + settings.getHost() + ":" + settings.getPort();
 
+        SingleServerConfig serverConfig = config.useSingleServer()
+                .setAddress(address)
+                .setDatabase(settings.getDatabase())
+                .setConnectTimeout(settings.getTimeout())
+                .setTimeout(settings.getTimeout())
+                .setRetryAttempts(3)
+                .setRetryInterval(1500)
+                .setConnectionPoolSize(settings.getConnectionPoolSize())
+                .setConnectionMinimumIdleSize(settings.getConnectionMinimumIdleSize())
+                .setPingConnectionInterval(30000)
+                .setKeepAlive(true);
+
+        if (settings.getPassword() != null && !settings.getPassword().isEmpty()) {
+            serverConfig.setPassword(settings.getPassword());
+        }
+
+        plugin.getLogger().info("Redis Standalone configured: " + address);
+    }
+
+    /**
+     * Shutdown Redisson
+     */
+    public CompletableFuture<Void> shutdown() {
+        return CompletableFuture.runAsync(() -> {
             try {
-                return operation.get();
-            } finally {
-                releaseLock(playerUuid, lockToken);
-            }
-        }, executor);
-    }
+                connected = false;
 
-    // ==================== Pub/Sub for Cross-Server Sync ====================
+                if (redisson != null && !redisson.isShutdown()) {
+                    redisson.shutdown(5, 15, TimeUnit.SECONDS);
+                }
 
-    /**
-     * Publish a balance update to all servers
-     */
-    public void publishBalanceUpdate(UUID playerUuid, double newBalance) {
-        if (!connected || jedisPool == null) {
-            return;
-        }
+                plugin.getLogger().info("✅ Redisson connection closed");
 
-        CompletableFuture.runAsync(() -> {
-            try (Jedis jedis = jedisPool.getResource()) {
-                BalanceUpdateMessage message = new BalanceUpdateMessage(
-                        playerUuid,
-                        newBalance,
-                        plugin.getConfigManager().getConfig().getServerId()
-                );
-                jedis.publish(BALANCE_CHANNEL, gson.toJson(message));
             } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "Failed to publish balance update", e);
+                plugin.getLogger().log(Level.SEVERE, "Error during Redisson shutdown", e);
             }
-        }, executor);
+        });
     }
 
     /**
-     * Publish a custom message
+     * Health check
      */
-    public void publish(String channel, Object message) {
-        if (!connected || jedisPool == null) {
-            return;
+    public boolean healthCheck() {
+        if (!connected || redisson == null || redisson.isShutdown()) {
+            return false;
         }
 
-        CompletableFuture.runAsync(() -> {
-            try (Jedis jedis = jedisPool.getResource()) {
-                jedis.publish(channel, gson.toJson(message));
-            } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "Failed to publish message", e);
-            }
-        }, executor);
-    }
-
-    // ==================== Message Classes ====================
-
-    /**
-     * Balance update message for pub/sub
-     */
-    public record BalanceUpdateMessage(UUID playerUuid, double newBalance, String sourceServer) {}
-
-    /**
-     * Instant type adapter for Gson
-     */
-    private static class InstantTypeAdapter extends TypeAdapter<Instant> {
-        @Override
-        public void write(JsonWriter out, Instant value) throws IOException {
-            if (value == null) {
-                out.nullValue();
-            } else {
-                out.value(value.toEpochMilli());
-            }
-        }
-
-        @Override
-        public Instant read(JsonReader in) throws IOException {
-            if (in.peek() == JsonToken.NULL) {
-                in.nextNull();
-                return null;
-            }
-            return Instant.ofEpochMilli(in.nextLong());
+        try {
+            redisson.getKeys().count();
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().log(Level.WARNING, "Redis health check failed", e);
+            return false;
         }
     }
+
+    /**
+     * Get connection stats
+     */
+    public String getConnectionStats() {
+        if (!connected || redisson == null) {
+            return "Redis: Disconnected";
+        }
+
+        StringBuilder stats = new StringBuilder();
+        stats.append("Redisson Status:\n");
+        stats.append("  Connected: ").append(!redisson.isShutdown()).append("\n");
+        stats.append("  Mode: ").append(settings.isClusterMode() ? "Cluster" : "Standalone").append("\n");
+
+        if (settings.isClusterMode()) {
+            stats.append("  Cluster Nodes: ").append(settings.getClusterNodes().size()).append("\n");
+        }
+
+        return stats.toString();
+    }
+
+
 }

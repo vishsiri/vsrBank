@@ -3,6 +3,7 @@ package dev.visherryz.plugins.vsrbank.database;
 import dev.visherryz.plugins.vsrbank.VsrBank;
 import dev.visherryz.plugins.vsrbank.config.BankConfig;
 import dev.visherryz.plugins.vsrbank.database.provider.DatabaseProvider;
+import dev.visherryz.plugins.vsrbank.database.provider.MariaDBProvider;
 import dev.visherryz.plugins.vsrbank.database.provider.MySQLProvider;
 import dev.visherryz.plugins.vsrbank.database.provider.SQLiteProvider;
 import lombok.Getter;
@@ -30,10 +31,9 @@ public class DatabaseManager {
         BankConfig.DatabaseSettings settings = plugin.getConfigManager().getConfig().getDatabase();
         String type = settings.getType().toUpperCase();
 
-        // Create appropriate provider based on config
         provider = switch (type) {
-            case "MYSQL" -> new MySQLProvider(plugin, settings, false);
-            case "MARIADB" -> new MySQLProvider(plugin, settings, true);
+            case "MYSQL" -> new MySQLProvider(plugin, settings);
+            case "MARIADB" -> new MariaDBProvider(plugin, settings);
             case "SQLITE" -> new SQLiteProvider(plugin, settings);
             default -> {
                 plugin.getLogger().warning("Unknown database type: " + type + ", defaulting to SQLite");

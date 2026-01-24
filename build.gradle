@@ -74,7 +74,7 @@ dependencies {
     implementation "io.github.revxrsal:lamp.bukkit:${project.property('lamp.version')}"
     implementation "dev.triumphteam:triumph-gui-paper:${project.property('triumph.gui.version')}"
     implementation "de.exlll:configlib-paper:${project.property('configlib.version')}"
-    implementation "redis.clients:jedis:${project.property('jedis.version')}"
+    implementation("org.redisson:redisson:4.1.0")
     implementation "com.zaxxer:HikariCP:${project.property('hikari.version')}"
     implementation "org.mariadb.jdbc:mariadb-java-client:${project.property('mariadb.version')}"
     compileOnly "com.github.MilkBowl:VaultAPI:1.7.1"

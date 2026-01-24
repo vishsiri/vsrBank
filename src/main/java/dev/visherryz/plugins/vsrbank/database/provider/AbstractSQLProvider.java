@@ -14,6 +14,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -110,11 +111,36 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
     @Override
     public CompletableFuture<Void> shutdown() {
         return CompletableFuture.runAsync(() -> {
-            if (dataSource != null && !dataSource.isClosed()) {
-                dataSource.close();
+            try {
+                // Close HikariCP datasource
+                if (dataSource != null && !dataSource.isClosed()) {
+                    dataSource.close();
+                }
+
+                // Shutdown executor with timeout
+                executor.shutdown();
+                if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                    plugin.getLogger().warning("Database executor didn't terminate in 30s, forcing shutdown");
+
+                    // Force shutdown and get pending tasks
+                    List<Runnable> pending = executor.shutdownNow();
+                    if (!pending.isEmpty()) {
+                        plugin.getLogger().warning("Forced shutdown, " + pending.size() + " tasks cancelled");
+                    }
+
+                    // Final wait
+                    if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        plugin.getLogger().severe("Database executor didn't terminate after force shutdown!");
+                    }
+                }
+
+                plugin.getLogger().info("Database connection closed successfully");
+
+            } catch (InterruptedException e) {
+                plugin.getLogger().warning("Interrupted during database shutdown");
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
             }
-            executor.shutdown();
-            plugin.getLogger().info("Database connection closed");
         });
     }
 
@@ -234,10 +260,10 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
             // ATOMIC UPDATE - Key to preventing exploits!
             // Uses: balance = balance + ? instead of SET balance = <calculated_value>
             String updateSql = """
-                UPDATE %s 
+                UPDATE %s\s
                 SET balance = balance + ?, updated_at = ?
                 WHERE uuid = ?
-                """.formatted(accountsTable);
+               \s""".formatted(accountsTable);
 
             String selectSql = "SELECT balance FROM " + accountsTable + " WHERE uuid = ?";
 
@@ -474,11 +500,11 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
     public CompletableFuture<Long> insertLog(TransactionLog log) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
-                INSERT INTO %s (player_uuid, player_name, type, amount, balance_before, 
-                    balance_after, target_uuid, target_name, server_id, reason, 
+                INSERT INTO %s (player_uuid, player_name, type, amount, balance_before,\s
+                    balance_after, target_uuid, target_name, server_id, reason,\s
                     admin_action, admin_name, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """.formatted(logsTable);
+               \s""".formatted(logsTable);
 
             try (Connection conn = dataSource.getConnection();
                  PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -515,11 +541,11 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
     public CompletableFuture<List<TransactionLog>> getTransactionHistory(UUID uuid, int limit) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
-                SELECT * FROM %s 
-                WHERE player_uuid = ? 
-                ORDER BY timestamp DESC 
+                SELECT * FROM %s\s
+                WHERE player_uuid = ?\s
+                ORDER BY timestamp DESC\s
                 LIMIT ?
-                """.formatted(logsTable);
+               \s""".formatted(logsTable);
 
             try (Connection conn = dataSource.getConnection();
                  PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -546,10 +572,10 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
     public CompletableFuture<List<TransactionLog>> getAllLogs(int limit, int offset) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
-                SELECT * FROM %s 
-                ORDER BY timestamp DESC 
+                SELECT * FROM %s\s
+                ORDER BY timestamp DESC\s
                 LIMIT ? OFFSET ?
-                """.formatted(logsTable);
+               \s""".formatted(logsTable);
 
             try (Connection conn = dataSource.getConnection();
                  PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -578,9 +604,9 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
     public CompletableFuture<List<BankAccount>> getAccountsEligibleForInterest(double minBalance) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
-                SELECT * FROM %s 
+                SELECT * FROM %s\s
                 WHERE balance >= ?
-                """.formatted(accountsTable);
+               \s""".formatted(accountsTable);
 
             try (Connection conn = dataSource.getConnection();
                  PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -606,13 +632,13 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
     public CompletableFuture<Boolean> applyInterest(UUID uuid, double interestAmount) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
-                UPDATE %s 
+                UPDATE %s\s
                 SET balance = balance + ?,
                     total_interest_earned = total_interest_earned + ?,
                     last_interest_time = ?,
                     updated_at = ?
                 WHERE uuid = ?
-                """.formatted(accountsTable);
+               \s""".formatted(accountsTable);
 
             try (Connection conn = dataSource.getConnection();
                  PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -638,10 +664,10 @@ public abstract class AbstractSQLProvider implements DatabaseProvider {
     public CompletableFuture<List<BankAccount>> getTopBalances(int limit) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
-                SELECT * FROM %s 
-                ORDER BY balance DESC 
+                SELECT * FROM %s\s
+                ORDER BY balance DESC\s
                 LIMIT ?
-                """.formatted(accountsTable);
+               \s""".formatted(accountsTable);
 
             try (Connection conn = dataSource.getConnection();
                  PreparedStatement stmt = conn.prepareStatement(sql)) {

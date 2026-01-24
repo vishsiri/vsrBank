@@ -111,7 +111,7 @@ public class InterestService {
                         }
 
                         // Publish to Redis
-                        plugin.getRedisManager().publishBalanceUpdate(
+                        plugin.getRedisPubSubService().publishBalanceUpdate(
                                 account.getUuid(),
                                 account.getBalance() + interest
                         );

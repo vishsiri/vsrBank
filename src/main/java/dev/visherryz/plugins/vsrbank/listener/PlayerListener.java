@@ -45,5 +45,8 @@ public class PlayerListener implements Listener {
                     plugin.getLogger().warning("Failed to update last online for " + player.getName());
                     return false;
                 });
+
+        plugin.removeCooldown(player.getUniqueId());
+        plugin.getBankService().clearCooldown(player.getUniqueId());
     }
 }
