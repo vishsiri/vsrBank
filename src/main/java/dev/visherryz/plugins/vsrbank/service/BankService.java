@@ -170,31 +170,50 @@ public class BankService {
                             TransactionResponse.failure(BankResult.TRANSACTION_LOCKED)); // Event cancelled
                 }
 
-                // Check max balance
+                // Check max balance and auto-clamp amount to fit remaining space
                 BankConfig.TierSettings tier = config.getTier(account.getTier());
                 double maxBalance = tier.getMaxBalance();
-                if (!account.canDeposit(amount, maxBalance) &&
-                        !player.hasPermission("vsrbank.bypass.maxbalance")) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.MAX_BALANCE_REACHED, previousBalance));
+                double depositAmount = amount;
+
+                // maxBalance < 0 means unlimited (e.g. Netherite tier)
+                if (maxBalance >= 0 && !player.hasPermission("vsrbank.bypass.maxbalance")) {
+                    double remaining = maxBalance - previousBalance;
+
+                    if (remaining <= 0) {
+                        // Already at max, cannot deposit anything
+                        return CompletableFuture.completedFuture(
+                                TransactionResponse.failure(BankResult.MAX_BALANCE_REACHED, previousBalance));
+                    }
+
+                    // Clamp deposit to remaining space
+                    if (depositAmount > remaining) {
+                        depositAmount = Math.floor(remaining * 100.0) / 100.0;
+                    }
+
+                    // After clamping, check if still meets minimum deposit
+                    if (depositAmount < txSettings.getMinDepositAmount()) {
+                        return CompletableFuture.completedFuture(
+                                TransactionResponse.failure(BankResult.MAX_BALANCE_REACHED, previousBalance));
+                    }
                 }
 
-                // Withdraw from Vault
-                if (!economy.withdrawPlayer(player, amount).transactionSuccess()) {
+                // Withdraw from Vault (use clamped depositAmount)
+                final double finalDepositAmount = depositAmount;
+                if (!economy.withdrawPlayer(player, finalDepositAmount).transactionSuccess()) {
                     return CompletableFuture.completedFuture(
                             TransactionResponse.failure(BankResult.INSUFFICIENT_FUNDS));
                 }
 
                 // Deposit to bank (ATOMIC)
-                return getDatabase().updateBalanceAtomic(uuid, amount).thenApply(newBalance -> {
+                return getDatabase().updateBalanceAtomic(uuid, finalDepositAmount).thenApply(newBalance -> {
                     if (newBalance < 0) {
-                        economy.depositPlayer(player, amount); // Rollback
+                        economy.depositPlayer(player, finalDepositAmount); // Rollback
                         return TransactionResponse.failure(BankResult.DATABASE_ERROR);
                     }
 
                     // Log transaction
                     TransactionLog log = TransactionLog.deposit(
-                            uuid, player.getName(), amount, previousBalance, newBalance, getServerId());
+                            uuid, player.getName(), finalDepositAmount, previousBalance, newBalance, getServerId());
                     log.setReason(reason);
                     getDatabase().insertLog(log);
 
@@ -203,10 +222,10 @@ public class BankService {
 
                     // Fire Post-Transaction Event
                     firePostTransactionEvent(uuid, player.getName(),
-                            TransactionLog.TransactionType.DEPOSIT, amount, previousBalance, newBalance);
+                            TransactionLog.TransactionType.DEPOSIT, finalDepositAmount, previousBalance, newBalance);
 
                     setCooldown(uuid);
-                    return TransactionResponse.success(previousBalance, newBalance, amount);
+                    return TransactionResponse.success(previousBalance, newBalance, finalDepositAmount);
                 });
             });
         });

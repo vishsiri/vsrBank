@@ -51,7 +51,6 @@ public final class VsrBank extends JavaPlugin {
     @Getter private VaultHook vaultHook;
     private InterestTask interestTask;
     private final Map<UUID, Long> clickCooldowns = new HashMap<>();
-    private static final long COOLDOWN_MILLIS = 500;
 
     @Override
     public void onEnable() {
@@ -160,8 +159,9 @@ public final class VsrBank extends JavaPlugin {
     public boolean canClick(Player player) {
         long now = System.currentTimeMillis();
         long lastClick = clickCooldowns.getOrDefault(player.getUniqueId(), 0L);
+        long cooldown = configManager.getConfig().getTransaction().getCooldownMs();
 
-        if (now - lastClick < COOLDOWN_MILLIS) {
+        if (now - lastClick < cooldown) {
             return false;
         }
 

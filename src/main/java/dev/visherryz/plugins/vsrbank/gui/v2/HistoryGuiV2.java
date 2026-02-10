@@ -11,6 +11,7 @@ import org.bukkit.Material;
 import org.bukkit.entity.Player;
 
 import java.text.DecimalFormat;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -93,32 +94,59 @@ public class HistoryGuiV2 {
         String color = format.getTypeColors().getOrDefault(typeKey, "<yellow>");
         String amountPrefix = format.getAmountPrefixes().getOrDefault(typeKey, "");
 
+        boolean hasTarget = log.getTargetName() != null && !log.getTargetName().isEmpty();
+
         Map<String, String> placeholders = new HashMap<>();
         placeholders.put("color", color);
         placeholders.put("amount_prefix", amountPrefix);
         placeholders.put("amount", formatMoney(log.getAmount()));
         placeholders.put("balance", formatMoney(log.getBalanceAfter()));
         placeholders.put("date", log.getFormattedDate());
-        placeholders.put("target", log.getTargetName() != null ? log.getTargetName() : "");
+        placeholders.put("target", hasTarget ? log.getTargetName() : "");
 
-        // Target line (only if target exists)
-        String targetLine = "";
-        if (log.getTargetName() != null) {
-            targetLine = replacePlaceholders(format.getTargetLineFormat(), placeholders);
+        // Build target line only if target exists
+        if (hasTarget) {
+            String targetLine = replacePlaceholders(format.getTargetLineFormat(), placeholders);
+            placeholders.put("target_line", targetLine);
         }
-        placeholders.put("target_line", targetLine);
 
         var builder = dev.triumphteam.gui.builder.item.PaperItemBuilder.from(material)
                 .name(plugin.getMessageUtil().parse(
                         color + log.getType().getIcon() + " " + log.getType().getDisplayName()
                 ));
 
-        for (String line : format.getLore()) {
-            String processed = replacePlaceholders(line, placeholders);
-            // Skip empty lines and %target_line% if no target
-            if (!processed.isEmpty() && !processed.equals("%target_line%")) {
-                builder.lore(plugin.getMessageUtil().parse(processed));
+        // Build lore - check raw line BEFORE replacing placeholders
+        if (format.getLore() != null && !format.getLore().isEmpty()) {
+            List<net.kyori.adventure.text.Component> loreComponents = new ArrayList<>();
+
+            for (String rawLine : format.getLore()) {
+                // If this line is the target_line placeholder, skip entirely when no target
+                if (rawLine.trim().equals("%target_line%")) {
+                    if (!hasTarget) {
+                        continue;
+                    }
+                    // Has target - replace and add
+                    String processed = replacePlaceholders(rawLine, placeholders);
+                    if (!processed.isEmpty()) {
+                        loreComponents.add(plugin.getMessageUtil().parse(processed));
+                    }
+                    continue;
+                }
+
+                // Normal line - replace placeholders and add
+                String processed = replacePlaceholders(rawLine, placeholders);
+                if (!processed.isEmpty()) {
+                    loreComponents.add(plugin.getMessageUtil().parse(processed));
+                }
             }
+
+            builder.lore(loreComponents);
+        }
+
+        // CustomModelData support
+        Integer customModelData = format.getCustomModelData(log.getType());
+        if (customModelData != null && customModelData > 0) {
+            builder.model(customModelData);
         }
 
         return builder.asGuiItem();

@@ -82,10 +82,30 @@ public class InterestService {
 
     /**
      * Apply interest to an account
+     * FIXED: Now respects max balance limit (standard banking behavior)
      */
     private void applyInterest(BankAccount account, double interest) {
+        // Get tier max balance
+        BankConfig.TierSettings tier = plugin.getConfigManager().getConfig().getTier(account.getTier());
+        double maxBalance = tier.getMaxBalance();
+
+        // Cap interest to not exceed max balance (standard banking behavior)
+        double finalInterest = interest;
+        if (maxBalance > 0) { // -1 means unlimited
+            double newBalance = account.getBalance() + interest;
+            if (newBalance > maxBalance) {
+                finalInterest = Math.max(0, maxBalance - account.getBalance());
+                if (finalInterest <= 0) {
+                    // Balance already at or above max, no interest
+                    return;
+                }
+            }
+        }
+
+        double actualInterest = finalInterest;
+
         plugin.getDatabaseManager().getProvider()
-                .applyInterest(account.getUuid(), interest)
+                .applyInterest(account.getUuid(), actualInterest)
                 .thenAccept(success -> {
                     if (success) {
                         // Log the interest
@@ -93,9 +113,9 @@ public class InterestService {
                                 .playerUuid(account.getUuid())
                                 .playerName(account.getPlayerName())
                                 .type(TransactionLog.TransactionType.INTEREST)
-                                .amount(interest)
+                                .amount(actualInterest)
                                 .balanceBefore(account.getBalance())
-                                .balanceAfter(account.getBalance() + interest)
+                                .balanceAfter(account.getBalance() + actualInterest)
                                 .serverId(plugin.getConfigManager().getConfig().getServerId())
                                 .reason("Interest payment")
                                 .adminAction(false)
@@ -107,13 +127,13 @@ public class InterestService {
                         // Notify player if online
                         Player player = Bukkit.getPlayer(account.getUuid());
                         if (player != null && player.isOnline()) {
-                            plugin.getMessageUtil().sendInterestReceived(player, interest);
+                            plugin.getMessageUtil().sendInterestReceived(player, actualInterest);
                         }
 
                         // Publish to Redis
                         plugin.getRedisPubSubService().publishBalanceUpdate(
                                 account.getUuid(),
-                                account.getBalance() + interest
+                                account.getBalance() + actualInterest
                         );
                     }
                 });

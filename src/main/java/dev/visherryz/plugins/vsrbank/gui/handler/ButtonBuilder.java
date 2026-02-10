@@ -3,6 +3,7 @@ package dev.visherryz.plugins.vsrbank.gui.handler;
 import dev.triumphteam.gui.builder.item.PaperItemBuilder;
 import dev.triumphteam.gui.guis.GuiItem;
 import dev.visherryz.plugins.vsrbank.VsrBank;
+import dev.visherryz.plugins.vsrbank.config.MessagesConfig;
 import dev.visherryz.plugins.vsrbank.gui.common.ButtonConfig;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import net.kyori.adventure.text.Component;
@@ -26,6 +27,10 @@ public class ButtonBuilder {
     public ButtonBuilder(VsrBank plugin) {
         this.plugin = plugin;
         this.buttonHandler = new ButtonHandler(plugin);
+    }
+
+    private MessagesConfig msg() {
+        return plugin.getConfigManager().getMessages();
     }
 
     public GuiItem buildButton(ButtonConfig config, BankAccount account, Map<String, String> placeholders) {
@@ -141,7 +146,6 @@ public class ButtonBuilder {
             builder.lore(lore);
         }
 
-        // เพิ่มส่วนนี้
         if (template.hasCustomModelData()) {
             builder.model(template.getCustomModelData());
         }
@@ -165,7 +169,8 @@ public class ButtonBuilder {
                     plugin.getBankService().withdraw(player, amount, "Withdraw")
                             .thenAccept(response -> plugin.getServer().getScheduler().runTask(plugin, () -> {
                                 if (response.isSuccess()) {
-                                    plugin.getMessageUtil().sendDepositSuccess(player, amount, response.getNewBalance());
+                                    // BUG FIX: was sendDepositSuccess, now correctly sendWithdrawSuccess
+                                    plugin.getMessageUtil().sendWithdrawSuccess(player, amount, response.getNewBalance());
                                     new dev.visherryz.plugins.vsrbank.gui.v2.BankGuiV2(plugin).open(player);
                                 } else {
                                     handleTransactionError(player, response);
@@ -226,16 +231,22 @@ public class ButtonBuilder {
         player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
 
         switch (response.getResult()) {
-            // Corrected from INSUFFICIENT_BALANCE
             case INSUFFICIENT_FUNDS ->
-                    plugin.getMessageUtil().send(player, "<red>Insufficient funds!</red>");
+                    plugin.getMessageUtil().send(player, msg().getInsufficientFunds()
+                            .replace("{balance}", formatMoney(response.getPreviousBalance())));
 
-            // Corrected from MAX_BALANCE_EXCEEDED
             case MAX_BALANCE_REACHED ->
-                    plugin.getMessageUtil().send(player, "<red>Max balance exceeded!</red>");
+                    plugin.getMessageUtil().send(player, msg().getMaxBalanceReached()
+                            .replace("{max}", formatMoney(
+                                    plugin.getConfigManager().getConfig().getTier(1).getMaxBalance())));
+
+            case COOLDOWN_ACTIVE ->
+                    plugin.getMessageUtil().send(player, msg().getCooldownActive()
+                            .replace("{seconds}", String.valueOf(
+                                    plugin.getBankService().getRemainingCooldown(player.getUniqueId()))));
 
             default ->
-                    plugin.getMessageUtil().send(player, "<red>Transaction failed!</red>");
+                    plugin.getMessageUtil().send(player, msg().getDatabaseError());
         }
     }
 

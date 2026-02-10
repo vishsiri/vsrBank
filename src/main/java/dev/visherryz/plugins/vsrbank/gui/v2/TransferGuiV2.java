@@ -3,6 +3,7 @@ package dev.visherryz.plugins.vsrbank.gui.v2;
 import dev.triumphteam.gui.guis.Gui;
 import dev.triumphteam.gui.guis.GuiItem;
 import dev.visherryz.plugins.vsrbank.VsrBank;
+import dev.visherryz.plugins.vsrbank.config.MessagesConfig;
 import dev.visherryz.plugins.vsrbank.config.gui.TransferGuiConfig;
 import dev.visherryz.plugins.vsrbank.gui.ChatInputHandler;
 import dev.visherryz.plugins.vsrbank.gui.handler.ButtonBuilder;
@@ -29,6 +30,10 @@ public class TransferGuiV2 {
         this.buttonBuilder = new ButtonBuilder(plugin);
     }
 
+    private MessagesConfig msg() {
+        return plugin.getConfigManager().getMessages();
+    }
+
     public void open(Player player) {
         plugin.getBankService().getAccount(player.getUniqueId())
                 .thenAccept(optAccount -> plugin.getServer().getScheduler().runTask(plugin,
@@ -37,7 +42,7 @@ public class TransferGuiV2 {
                                 openGui(player, optAccount.get());
                             } else {
                                 player.closeInventory();
-                                plugin.getMessageUtil().send(player, "<red>Account not found!</red>");
+                                plugin.getMessageUtil().send(player, msg().getNoAccount());
                             }
                         }));
     }
@@ -76,7 +81,6 @@ public class TransferGuiV2 {
                 .add("balance", formatMoney(account.getBalance()))
                 .build();
 
-        // แก้จาก buildItem เป็น buildButton
         GuiItem infoItem = buttonBuilder.buildButton(config.getBalanceInfo(), account, placeholders);
         gui.setItem(config.getBalanceInfo().getSlot(), infoItem);
     }

@@ -36,7 +36,6 @@ public class BankGuiV2 {
     }
 
     private void openGui(Player player, BankAccount account) {
-        // เปลี่ยนจาก guiConfigManager เป็น configManager
         BankGuiConfig config = plugin.getConfigManager().getBankGui();
 
         Gui gui = Gui.gui()
@@ -71,11 +70,13 @@ public class BankGuiV2 {
         }
 
         var tier = plugin.getConfigManager().getConfig().getTier(account.getTier());
+        var maxBalance = tier.getMaxBalance();
 
         Map<String, String> placeholders = buttonBuilder.placeholders()
                 .add("player", player.getName())
                 .add("balance", formatMoney(account.getBalance()))
                 .add("tier", tier.getName())
+                .add("max_balance", maxBalance < 0 ? "Unlimited" : formatMoney(maxBalance))
                 .add("interest", String.format("%.2fx", tier.getInterestMultiplier()))
                 .build();
 

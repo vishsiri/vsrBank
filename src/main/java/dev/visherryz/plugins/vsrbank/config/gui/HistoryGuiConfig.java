@@ -3,14 +3,12 @@ package dev.visherryz.plugins.vsrbank.config.gui;
 import de.exlll.configlib.Comment;
 import de.exlll.configlib.Configuration;
 import dev.visherryz.plugins.vsrbank.gui.common.ButtonConfig;
+import dev.visherryz.plugins.vsrbank.model.TransactionLog;
 import lombok.Getter;
 import lombok.Setter;
 import org.bukkit.Material;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Getter
 @Setter
@@ -51,6 +49,9 @@ public class HistoryGuiConfig {
         @Comment("Amount prefix for transaction types")
         private Map<String, String> amountPrefixes = createAmountPrefixes();
 
+        @Comment("Custom model data for transaction types (optional)")
+        private Map<String, Integer> customModelData = new HashMap<>();
+
         @Comment("Lore format - placeholders: %color%, %amount%, %balance%, %target%, %date%")
         private List<String> lore = List.of(
                 "<gray>Amount: %color%%amount_prefix%%amount%</gray>",
@@ -62,6 +63,11 @@ public class HistoryGuiConfig {
 
         @Comment("Target player line format (shown when target exists)")
         private String targetLineFormat = "<gray>Player: <white>%target%</white></gray>";
+
+        // เพิ่ม helper method
+        public Integer getCustomModelData(TransactionLog.TransactionType type) {
+            return customModelData.get(type.name());
+        }
 
         private static Map<String, String> createTypeColors() {
             Map<String, String> colors = new LinkedHashMap<>();

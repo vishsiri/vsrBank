@@ -1,9 +1,11 @@
 package dev.visherryz.plugins.vsrbank.gui.handler;
 
 import dev.visherryz.plugins.vsrbank.VsrBank;
+import dev.visherryz.plugins.vsrbank.config.MessagesConfig;
 import dev.visherryz.plugins.vsrbank.gui.ChatInputHandler;
 import dev.visherryz.plugins.vsrbank.gui.common.ButtonConfig;
 import dev.visherryz.plugins.vsrbank.gui.v2.BankGuiV2;
+import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import dev.visherryz.plugins.vsrbank.gui.v2.HistoryGuiV2;
 import dev.visherryz.plugins.vsrbank.gui.v2.TransferGuiV2;
 import dev.visherryz.plugins.vsrbank.gui.v2.UpgradeGuiV2;
@@ -17,6 +19,7 @@ import java.util.function.Consumer;
 /**
  * Handles button actions based on ButtonType
  * Updated to use V2 GUIs and support all button types
+ * All messages are now pulled from MessagesConfig
  */
 public class ButtonHandler {
 
@@ -25,6 +28,10 @@ public class ButtonHandler {
 
     public ButtonHandler(VsrBank plugin) {
         this.plugin = plugin;
+    }
+
+    private MessagesConfig msg() {
+        return plugin.getConfigManager().getMessages();
     }
 
     /**
@@ -57,7 +64,7 @@ public class ButtonHandler {
             openGui(player, config.getTargetGui());
         } else {
             playErrorSound(player);
-            plugin.getMessageUtil().send(player, "<red>You don't have permission to access this!</red>");
+            plugin.getMessageUtil().send(player, msg().getNoPermission());
         }
     }
 
@@ -89,7 +96,7 @@ public class ButtonHandler {
             processDeposit(player, wallet);
         } else {
             playErrorSound(player);
-            plugin.getMessageUtil().send(player, "<red>You don't have any money in your wallet!</red>");
+            plugin.getMessageUtil().send(player, msg().getWalletEmpty());
         }
     }
 
@@ -98,7 +105,7 @@ public class ButtonHandler {
             processWithdraw(player, account.getBalance());
         } else {
             playErrorSound(player);
-            plugin.getMessageUtil().send(player, "<red>Your bank account is empty!</red>");
+            plugin.getMessageUtil().send(player, msg().getBankEmpty());
         }
     }
 
@@ -106,7 +113,7 @@ public class ButtonHandler {
         double wallet = plugin.getVaultHook().getEconomy().getBalance(player);
         if (wallet <= 0) {
             playErrorSound(player);
-            plugin.getMessageUtil().send(player, "<red>You don't have any money in your wallet!</red>");
+            plugin.getMessageUtil().send(player, msg().getWalletEmpty());
             return;
         }
 
@@ -116,7 +123,7 @@ public class ButtonHandler {
         if (halfAmount < minDeposit) {
             playErrorSound(player);
             plugin.getMessageUtil().send(player,
-                    "<red>Minimum deposit amount is " + formatMoney(minDeposit) + "!</red>");
+                    msg().getDepositMinimum().replace("{min}", formatMoney(minDeposit)));
             return;
         }
 
@@ -126,7 +133,7 @@ public class ButtonHandler {
     private void handleWithdrawHalf(Player player, BankAccount account) {
         if (account == null || account.getBalance() <= 0) {
             playErrorSound(player);
-            plugin.getMessageUtil().send(player, "<red>Your bank account is empty!</red>");
+            plugin.getMessageUtil().send(player, msg().getBankEmpty());
             return;
         }
 
@@ -136,7 +143,7 @@ public class ButtonHandler {
         if (halfAmount < minWithdraw) {
             playErrorSound(player);
             plugin.getMessageUtil().send(player,
-                    "<red>Minimum withdrawal amount is " + formatMoney(minWithdraw) + "!</red>");
+                    msg().getWithdrawMinimum().replace("{min}", formatMoney(minWithdraw)));
             return;
         }
 
@@ -167,7 +174,7 @@ public class ButtonHandler {
             new UpgradeGuiV2(plugin, account).open(player);
         } else {
             playErrorSound(player);
-            plugin.getMessageUtil().send(player, "<red>You are already at maximum tier!</red>");
+            plugin.getMessageUtil().send(player, msg().getUpgradeMaxTier());
         }
     }
 
@@ -180,7 +187,7 @@ public class ButtonHandler {
             player.performCommand(config.getCommand());
         } else {
             playErrorSound(player);
-            plugin.getMessageUtil().send(player, "<red>You don't have permission to use this!</red>");
+            plugin.getMessageUtil().send(player, msg().getNoPermission());
         }
     }
 
@@ -219,9 +226,15 @@ public class ButtonHandler {
             case INSUFFICIENT_FUNDS ->
                     plugin.getMessageUtil().sendInsufficientFunds(player, response.getPreviousBalance());
 
-            case MAX_BALANCE_REACHED ->
-                    plugin.getMessageUtil().sendMaxBalanceReached(player,
-                            plugin.getConfigManager().getConfig().getTier(1).getMaxBalance());
+            case MAX_BALANCE_REACHED -> {
+                // Fetch the player's actual tier to show correct max balance
+                plugin.getBankService().getAccount(player.getUniqueId()).thenAccept(optAccount -> {
+                    int tier = optAccount.map(BankAccount::getTier).orElse(1);
+                    double maxBalance = plugin.getConfigManager().getConfig().getTier(tier).getMaxBalance();
+                    plugin.getServer().getScheduler().runTask(plugin, () ->
+                            plugin.getMessageUtil().sendMaxBalanceReached(player, maxBalance));
+                });
+            }
 
             case COOLDOWN_ACTIVE ->
                     plugin.getMessageUtil().sendCooldownActive(player,

@@ -31,9 +31,12 @@ public class MessagesConfig {
     private String balanceDisplay = "<gold>Your bank balance: <white>{balance}</white></gold>";
     private String balanceOther = "<gold>{player}'s bank balance: <white>{balance}</white></gold>";
     private String maxBalanceReached = "<red>You've reached your maximum balance limit of <white>{max}</white>!</red>";
+    private String walletEmpty = "<red>You don't have any money in your wallet!</red>";
+    private String bankEmpty = "<red>Your bank account is empty!</red>";
 
     @Comment({"", "Deposit Messages"})
     private String depositSuccess = "<green>Successfully deposited <white>{amount}</white>! New balance: <white>{balance}</white></green>";
+    private String depositClamped = "<yellow>Deposit adjusted to <white>{amount}</white> to fit your tier's max balance of <white>{max}</white>.</yellow>";
     private String depositFailed = "<red>Deposit failed! You don't have enough money.</red>";
     private String depositMinimum = "<red>Minimum deposit amount is <white>{min}</white>!</red>";
     private String depositWouldExceedMax = "<red>This deposit would exceed your maximum balance of <white>{max}</white>!</red>";

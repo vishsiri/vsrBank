@@ -4,6 +4,7 @@ import dev.triumphteam.gui.guis.Gui;
 import dev.triumphteam.gui.guis.GuiItem;
 import dev.visherryz.plugins.vsrbank.VsrBank;
 import dev.visherryz.plugins.vsrbank.config.BankConfig;
+import dev.visherryz.plugins.vsrbank.config.MessagesConfig;
 import dev.visherryz.plugins.vsrbank.config.gui.UpgradeGuiConfig;
 import dev.visherryz.plugins.vsrbank.gui.handler.ButtonBuilder;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
@@ -28,6 +29,10 @@ public class UpgradeGuiV2 {
         this.plugin = plugin;
         this.buttonBuilder = new ButtonBuilder(plugin);
         this.account = account;
+    }
+
+    private MessagesConfig msg() {
+        return plugin.getConfigManager().getMessages();
     }
 
     public void open(Player player) {
@@ -73,7 +78,9 @@ public class UpgradeGuiV2 {
         placeholders.put("cost", formatMoney(tierSettings.getUpgradeCost()));
         placeholders.put("xp", String.valueOf(tierSettings.getUpgradeXpCost()));
         placeholders.put("interest", String.format("%.2fx", tierSettings.getInterestMultiplier()));
-        placeholders.put("max_balance", formatMoney(tierSettings.getMaxBalance()));
+        placeholders.put("max_balance", tierSettings.getMaxBalance() < 0
+                ? "Unlimited"
+                : formatMoney(tierSettings.getMaxBalance()));
 
         var builder = dev.triumphteam.gui.builder.item.PaperItemBuilder.from(display.getMaterial())
                 .name(plugin.getMessageUtil().parse(
@@ -124,7 +131,7 @@ public class UpgradeGuiV2 {
     }
 
     private void processUpgrade(Player player, BankConfig.TierSettings nextTierSettings) {
-        plugin.getMessageUtil().sendRaw(player, "<yellow>Processing upgrade...</yellow>");
+        plugin.getMessageUtil().sendRaw(player, msg().getTransactionLocked());
 
         plugin.getBankService().upgradeTier(player).thenAccept(response ->
                 plugin.getServer().getScheduler().runTask(plugin, () -> {
@@ -146,16 +153,22 @@ public class UpgradeGuiV2 {
 
         switch (response.getResult()) {
             case INSUFFICIENT_MONEY_FOR_UPGRADE ->
-                    plugin.getMessageUtil().send(player, "<red>Insufficient funds for upgrade!</red>");
+                    plugin.getMessageUtil().send(player, msg().getUpgradeNotEnoughMoney()
+                            .replace("{cost}", formatMoney(
+                                    plugin.getConfigManager().getConfig()
+                                            .getTier(account.getTier() + 1).getUpgradeCost())));
 
             case INSUFFICIENT_XP_FOR_UPGRADE ->
-                    plugin.getMessageUtil().send(player, "<red>Insufficient XP levels for upgrade!</red>");
+                    plugin.getMessageUtil().send(player, msg().getUpgradeNotEnoughXp()
+                            .replace("{xp}", String.valueOf(
+                                    plugin.getConfigManager().getConfig()
+                                            .getTier(account.getTier() + 1).getUpgradeXpCost())));
 
             case MAX_TIER_REACHED ->
-                    plugin.getMessageUtil().send(player, "<red>You are already at maximum tier!</red>");
+                    plugin.getMessageUtil().send(player, msg().getUpgradeMaxTier());
 
             default ->
-                    plugin.getMessageUtil().sendUpgradeFailed(player);
+                    plugin.getMessageUtil().send(player, msg().getUpgradeFailed());
         }
     }
 

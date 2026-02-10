@@ -234,35 +234,6 @@ public class BankConfig {
     @Getter
     @Setter
     @Configuration
-    public static class GuiSettings {
-        @Comment("Main GUI title (supports MiniMessage format)")
-        private String mainTitle = "<gradient:#FFD700:#FFA500>Bank Dashboard</gradient>";
-
-        @Comment("History GUI title")
-        private String historyTitle = "<gold>Transaction History</gold>";
-
-        @Comment("Upgrade GUI title")
-        private String upgradeTitle = "<yellow>Bank Upgrades</yellow>";
-
-        @Comment("Transfer GUI title")
-        private String transferTitle = "<aqua>Transfer Money</aqua>";
-
-        @Comment("Deposit/Withdraw preset amounts")
-        private List<Double> presetAmounts = List.of(5.0, 10.0, 100.0, 1000.0, 10000.0);
-
-        @Comment("Rows for main GUI (1-6)")
-        private int mainGuiRows = 5;
-
-        @Comment("History entries to show")
-        private int historyEntries = 10;
-
-        @Comment("Enable GUI sounds")
-        private boolean enableSounds = true;
-    }
-
-    @Getter
-    @Setter
-    @Configuration
     public static class EconomySettings {
         @Comment("Register as Vault economy provider")
         private boolean registerAsVaultProvider = false;
