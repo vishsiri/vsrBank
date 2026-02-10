@@ -24,7 +24,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
-
 import revxrsal.commands.bukkit.BukkitLamp;
 
 import java.util.HashMap;
@@ -37,7 +36,7 @@ public final class VsrBank extends JavaPlugin {
 
     @Getter private static VsrBank instance;
     private static BankAPI api;
-    @Getter private ConfigManager configManager;
+    @Getter private ConfigManager configManager; // รวม GUI configs ไว้ใน ConfigManager แล้ว!
     @Getter private DatabaseManager databaseManager;
     @Getter private RedisManager redisManager;
     @Getter private RedisLockService redisLockService;
@@ -53,6 +52,7 @@ public final class VsrBank extends JavaPlugin {
     private InterestTask interestTask;
     private final Map<UUID, Long> clickCooldowns = new HashMap<>();
     private static final long COOLDOWN_MILLIS = 500;
+
     @Override
     public void onEnable() {
         instance = this;
@@ -62,8 +62,9 @@ public final class VsrBank extends JavaPlugin {
         getLogger().info("║         VsrBank - Starting Up...          ║");
         getLogger().info("╚═══════════════════════════════════════════╝");
 
+        // Load ALL configs (main, messages, legacy GUI, new GUI)
         configManager = new ConfigManager(this);
-        configManager.loadConfigs();
+        configManager.loadConfigs(); // โหลดทุกอย่างรวมกันเลย!
 
         messageUtil = new MessageUtil(this);
         discordWebhook = new DiscordWebhook(this);
@@ -115,7 +116,7 @@ public final class VsrBank extends JavaPlugin {
             placeholderHook = new PlaceholderExpansionHook(this);
             placeholderHook.register();
         }
-
+        this.chatInputHandler = new ChatInputHandler(this);
         long loadTime = System.currentTimeMillis() - startTime;
         getLogger().info("Enabled successfully in " + loadTime + "ms");
     }
@@ -123,9 +124,6 @@ public final class VsrBank extends JavaPlugin {
     @Override
     public void onDisable() {
         closeOpenMenus();
-        if (chatInputHandler != null) {
-            chatInputHandler.clearAllSessions();
-        }
         if (interestTask != null) interestTask.cancel();
         if (messageUtil != null) messageUtil.shutdown();
         if (discordWebhook != null) discordWebhook.shutdown();

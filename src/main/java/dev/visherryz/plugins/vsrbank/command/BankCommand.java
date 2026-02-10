@@ -1,9 +1,9 @@
 package dev.visherryz.plugins.vsrbank.command;
 
 import dev.visherryz.plugins.vsrbank.VsrBank;
-import dev.visherryz.plugins.vsrbank.gui.BankGui;
+import dev.visherryz.plugins.vsrbank.gui.v2.BankGuiV2;
 import dev.visherryz.plugins.vsrbank.gui.ChatInputHandler;
-import dev.visherryz.plugins.vsrbank.gui.HistoryGui;
+import dev.visherryz.plugins.vsrbank.gui.v2.HistoryGuiV2;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import dev.visherryz.plugins.vsrbank.model.BankResult;
 import org.bukkit.Bukkit;
@@ -25,7 +25,7 @@ public class BankCommand {
     @Command({"bank", "b", "banking"})
     @CommandPermission("vsrbank.use")
     public void openBank(Player player) {
-        new BankGui(plugin).open(player);
+        new BankGuiV2(plugin).open(player);
     }
 
     @Subcommand("help")
@@ -132,13 +132,13 @@ public class BankCommand {
     @Subcommand("upgrade")
     @CommandPermission("vsrbank.upgrade")
     public void upgrade(Player player) {
-        new BankGui(plugin).open(player);
+        new BankGuiV2(plugin).open(player);
     }
 
     @Subcommand("history")
     @CommandPermission("vsrbank.history")
     public void history(Player player) {
-        new HistoryGui(plugin).open(player);
+        new HistoryGuiV2(plugin).open(player);
     }
 
     // ==================== Admin Commands ====================

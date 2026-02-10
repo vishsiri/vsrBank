@@ -1,241 +1,273 @@
 package dev.visherryz.plugins.vsrbank.gui;
 
 import dev.visherryz.plugins.vsrbank.VsrBank;
+import dev.visherryz.plugins.vsrbank.gui.v2.BankGuiV2;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import dev.visherryz.plugins.vsrbank.model.TransactionResponse;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.Sound;
+import org.bukkit.conversations.*;
 import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
-import org.bukkit.event.HandlerList;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.AsyncPlayerChatEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.scheduler.BukkitTask;
+import org.jetbrains.annotations.NotNull;
 
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Handles chat input for custom amounts and player names
+ * Dialog-based ChatInputHandler using Bukkit Conversations API
+ * Updated to use BankGuiV2
  */
 public class ChatInputHandler {
 
     private final VsrBank plugin;
-
-    // Pending inputs: player UUID -> input type
-    private final Map<UUID, InputSession> pendingSessions = new ConcurrentHashMap<>();
+    private final ConversationFactory depositFactory;
+    private final ConversationFactory withdrawFactory;
+    private final ConversationFactory transferPlayerFactory;
 
     public ChatInputHandler(VsrBank plugin) {
         this.plugin = plugin;
+
+        // Create conversation factories
+        this.depositFactory = new ConversationFactory(plugin)
+                .withModality(true)
+                .withTimeout(30)
+                .withFirstPrompt(new AmountPrompt("deposit"))
+                .withEscapeSequence("cancel")
+                .addConversationAbandonedListener(this::onConversationAbandoned);
+
+        this.withdrawFactory = new ConversationFactory(plugin)
+                .withModality(true)
+                .withTimeout(30)
+                .withFirstPrompt(new AmountPrompt("withdraw"))
+                .withEscapeSequence("cancel")
+                .addConversationAbandonedListener(this::onConversationAbandoned);
+
+        this.transferPlayerFactory = new ConversationFactory(plugin)
+                .withModality(true)
+                .withTimeout(30)
+                .withFirstPrompt(new TransferPlayerPrompt())
+                .withEscapeSequence("cancel")
+                .addConversationAbandonedListener(this::onConversationAbandoned);
     }
 
     /**
      * Request amount input for deposit/withdraw
      */
     public void requestInput(Player player, String action) {
-        String title = "deposit".equalsIgnoreCase(action) ?
-                plugin.getConfigManager().getMessages().getGuiDepositTitle() :
-                plugin.getConfigManager().getMessages().getGuiWithdrawTitle();
-
-        plugin.getMessageUtil().sendRaw(player, "<yellow>" + title + "</yellow>");
-        plugin.getMessageUtil().sendRaw(player, "<gray>Type the amount in chat, or type 'cancel' to cancel.</gray>");
-
-        InputSession session = new InputSession(InputType.AMOUNT, action, null, null);
-        startSession(player, session);
+        if ("deposit".equalsIgnoreCase(action)) {
+            depositFactory.buildConversation(player).begin();
+        } else {
+            withdrawFactory.buildConversation(player).begin();
+        }
     }
 
     /**
      * Request player name for transfer
      */
     public void requestTransferPlayer(Player player) {
-        plugin.getMessageUtil().sendRaw(player, "<yellow>" + plugin.getConfigManager().getMessages().getGuiTransferPlayerTitle() + "</yellow>");
-        plugin.getMessageUtil().sendRaw(player, "<gray>Type the player name in chat, or type 'cancel' to cancel.</gray>");
-
-        InputSession session = new InputSession(InputType.PLAYER_NAME, "transfer", null, null);
-        startSession(player, session);
+        transferPlayerFactory.buildConversation(player).begin();
     }
 
     /**
      * Request transfer amount after selecting player
      */
     public void requestTransferAmount(Player player, UUID targetUuid, String targetName) {
-        plugin.getMessageUtil().sendRaw(player, "<yellow>Enter amount to transfer to <white>" + targetName + "</white>:</yellow>");
-        plugin.getMessageUtil().sendRaw(player, "<gray>Type the amount in chat, or type 'cancel' to cancel.</gray>");
+        ConversationFactory transferAmountFactory = new ConversationFactory(plugin)
+                .withModality(true)
+                .withTimeout(30)
+                .withFirstPrompt(new TransferAmountPrompt(targetUuid, targetName))
+                .withEscapeSequence("cancel")
+                .addConversationAbandonedListener(this::onConversationAbandoned);
 
-        InputSession session = new InputSession(InputType.TRANSFER_AMOUNT, "transfer", targetUuid, targetName);
-        startSession(player, session);
+        transferAmountFactory.buildConversation(player).begin();
     }
 
-    public void clearAllSessions() {
-        pendingSessions.values().forEach(session -> {
-            if (session.listener != null) {
-                HandlerList.unregisterAll(session.listener);
-            }
-            if (session.timeoutTask != null) {
-                session.timeoutTask.cancel();
-            }
-        });
-        pendingSessions.clear();
-    }
-
-    private void startSession(Player player, InputSession session) {
-        // Cancel any existing session
-        InputSession existing = pendingSessions.remove(player.getUniqueId());
-        if (existing != null && existing.listener != null) {
-            HandlerList.unregisterAll(existing.listener);
-        }
-        if (existing != null && existing.timeoutTask != null) {
-            existing.timeoutTask.cancel();
-        }
-
-        // Create listener
-        ChatListener listener = new ChatListener(player.getUniqueId());
-        plugin.getServer().getPluginManager().registerEvents(listener, plugin);
-        session.listener = listener;
-
-        // Set timeout (30 seconds)
-        session.timeoutTask = plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            InputSession expired = pendingSessions.remove(player.getUniqueId());
-            if (expired != null) {
-                if (expired.listener != null) {
-                    HandlerList.unregisterAll(expired.listener);
+    private void onConversationAbandoned(ConversationAbandonedEvent event) {
+        if (!event.gracefulExit()) {
+            Conversable conversable = event.getContext().getForWhom();
+            if (conversable instanceof Player player) {
+                if (event.getCanceller() instanceof ExactMatchConversationCanceller) {
+                    plugin.getMessageUtil().send(player, plugin.getConfigManager().getMessages().getGuiInputCancelled());
+                } else {
+                    plugin.getMessageUtil().send(player, plugin.getConfigManager().getMessages().getGuiInputTimeout());
                 }
-                plugin.getMessageUtil().send(player, plugin.getConfigManager().getMessages().getGuiInputTimeout());
-                new BankGui(plugin).open(player);
+                // เปลี่ยนเป็น BankGuiV2
+                plugin.getServer().getScheduler().runTask(plugin, () -> new BankGuiV2(plugin).open(player));
             }
-        }, 30 * 20L); // 30 seconds
-
-        pendingSessions.put(player.getUniqueId(), session);
-    }
-
-    private void handleInput(Player player, String input) {
-        InputSession session = pendingSessions.remove(player.getUniqueId());
-        if (session == null) return;
-
-        // Cleanup
-        if (session.listener != null) {
-            HandlerList.unregisterAll(session.listener);
-        }
-        if (session.timeoutTask != null) {
-            session.timeoutTask.cancel();
-        }
-
-        // Check for cancel
-        if ("cancel".equalsIgnoreCase(input.trim())) {
-            plugin.getMessageUtil().send(player, plugin.getConfigManager().getMessages().getGuiInputCancelled());
-            plugin.getServer().getScheduler().runTask(plugin, () -> new BankGui(plugin).open(player));
-            return;
-        }
-
-        switch (session.type) {
-            case AMOUNT -> handleAmountInput(player, input, session.action);
-            case PLAYER_NAME -> handlePlayerNameInput(player, input);
-            case TRANSFER_AMOUNT -> handleTransferAmountInput(player, input, session.targetUuid, session.targetName);
         }
     }
 
-    private void handleAmountInput(Player player, String input, String action) {
-        double amount;
-        try {
-            // Support formats like "1k", "1.5m"
-            amount = parseAmount(input.trim());
-        } catch (NumberFormatException e) {
-            plugin.getMessageUtil().sendInvalidAmount(player);
-            plugin.getServer().getScheduler().runTask(plugin, () -> new BankGui(plugin).open(player));
-            return;
+    // ==================== PROMPTS ====================
+
+    /**
+     * Amount input prompt for deposit/withdraw
+     */
+    private class AmountPrompt extends ValidatingPrompt {
+        private final String action;
+
+        public AmountPrompt(String action) {
+            this.action = action;
         }
 
-        if (amount <= 0) {
-            plugin.getMessageUtil().send(player, plugin.getConfigManager().getMessages().getMustBePositive());
-            plugin.getServer().getScheduler().runTask(plugin, () -> new BankGui(plugin).open(player));
-            return;
+        @Override
+        public @NotNull String getPromptText(@NotNull ConversationContext context) {
+            String title = "deposit".equalsIgnoreCase(action)
+                    ? plugin.getConfigManager().getMessages().getGuiDepositTitle()
+                    : plugin.getConfigManager().getMessages().getGuiWithdrawTitle();
+
+            return plugin.getMessageUtil().parsePlain("<yellow>" + title + "</yellow>\n<gray>Type the amount in chat, or type 'cancel' to cancel.</gray>");
         }
 
-        if ("deposit".equalsIgnoreCase(action)) {
-            plugin.getBankService().deposit(player, amount, "Custom deposit")
-                    .thenAccept(response -> handleTransactionResponse(player, response, amount, true));
-        } else {
-            plugin.getBankService().withdraw(player, amount, "Custom withdraw")
-                    .thenAccept(response -> handleTransactionResponse(player, response, amount, false));
+        @Override
+        protected boolean isInputValid(@NotNull ConversationContext context, String input) {
+            try {
+                double amount = parseAmount(input.trim());
+                return amount > 0;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+
+        @Override
+        protected String getFailedValidationText(@NotNull ConversationContext context, @NotNull String invalidInput) {
+            return plugin.getMessageUtil().parsePlain(plugin.getConfigManager().getMessages().getInvalidAmount());
+        }
+
+        @Override
+        protected Prompt acceptValidatedInput(ConversationContext context, String input) {
+            Player player = (Player) context.getForWhom();
+            double amount = parseAmount(input.trim());
+
+            if ("deposit".equalsIgnoreCase(action)) {
+                plugin.getBankService().deposit(player, amount, "Custom deposit")
+                        .thenAccept(response -> handleTransactionResponse(player, response, amount, true));
+            } else {
+                plugin.getBankService().withdraw(player, amount, "Custom withdraw")
+                        .thenAccept(response -> handleTransactionResponse(player, response, amount, false));
+            }
+
+            return END_OF_CONVERSATION;
         }
     }
 
-    private void handlePlayerNameInput(Player player, String input) {
-        String rawInput = input.trim();
+    /**
+     * Player name input prompt for transfer
+     */
+    private class TransferPlayerPrompt extends ValidatingPrompt {
 
-        OfflinePlayer target = Bukkit.getOfflinePlayer(rawInput);
-        String correctName = target.getName();
-
-        if (correctName == null) {
-            correctName = rawInput;
-        }
-        String finalTargetName = correctName;
-
-        plugin.getBankService().getAccountByName(finalTargetName).thenAccept(optAccount -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                if (optAccount.isEmpty()) {
-                    plugin.getMessageUtil().sendTargetNoAccount(player, finalTargetName);
-                    new BankGui(plugin).open(player);
-                    return;
-                }
-
-                BankAccount account = optAccount.get();
-                if (account.getUuid().equals(player.getUniqueId())) {
-                    plugin.getMessageUtil().sendTransferToSelf(player);
-                    new BankGui(plugin).open(player);
-                    return;
-                }
-
-                requestTransferAmount(player, account.getUuid(), account.getPlayerName());
-            });
-        });
-    }
-
-    private void handleTransferAmountInput(Player player, String input, UUID targetUuid, String targetName) {
-        double amount;
-        try {
-            amount = parseAmount(input.trim());
-        } catch (NumberFormatException e) {
-            plugin.getMessageUtil().sendInvalidAmount(player);
-            plugin.getServer().getScheduler().runTask(plugin, () -> new BankGui(plugin).open(player));
-            return;
+        @Override
+        public @NotNull String getPromptText(@NotNull ConversationContext context) {
+            return plugin.getMessageUtil().parsePlain("<yellow>" + plugin.getConfigManager().getMessages().getGuiTransferPlayerTitle() + "</yellow>\n<gray>Type the player name in chat, or type 'cancel' to cancel.</gray>");
         }
 
-        if (amount <= 0) {
-            plugin.getMessageUtil().send(player, plugin.getConfigManager().getMessages().getMustBePositive());
-            plugin.getServer().getScheduler().runTask(plugin, () -> new BankGui(plugin).open(player));
-            return;
+        @Override
+        protected boolean isInputValid(@NotNull ConversationContext context, String input) {
+            return !input.trim().isEmpty();
         }
 
-        plugin.getBankService().transfer(player, targetUuid, targetName, amount, "GUI transfer")
-                .thenAccept(response -> {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> {
-                        if (response.isSuccess()) {
-                            plugin.getMessageUtil().sendTransferSuccess(player, amount, targetName);
-                            if (response.getFee() > 0) {
-                                plugin.getMessageUtil().sendTransferFee(player, response.getFee());
-                            }
-                            player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                        } else {
-                            switch (response.getResult()) {
-                                case INSUFFICIENT_FUNDS -> plugin.getMessageUtil().sendInsufficientFunds(player, response.getPreviousBalance());
-                                case TARGET_NOT_FOUND -> plugin.getMessageUtil().sendTargetNoAccount(player, targetName);
-                                case SELF_TRANSFER -> plugin.getMessageUtil().sendTransferToSelf(player);
-                                case BELOW_MINIMUM -> plugin.getMessageUtil().sendTransferMinimum(player,
-                                        plugin.getConfigManager().getConfig().getTransaction().getMinTransferAmount());
-                                case ABOVE_MAXIMUM -> plugin.getMessageUtil().sendTransferMaximum(player,
-                                        plugin.getConfigManager().getConfig().getTransaction().getMaxTransferAmount());
-                                default -> plugin.getMessageUtil().sendTransferFailed(player);
-                            }
-                            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-                        }
-                    });
+        @Override
+        protected String getFailedValidationText(@NotNull ConversationContext context, @NotNull String invalidInput) {
+            return plugin.getMessageUtil().parsePlain("<red>Please enter a valid player name!</red>");
+        }
+
+        @Override
+        protected Prompt acceptValidatedInput(ConversationContext context, String input) {
+            Player player = (Player) context.getForWhom();
+            String rawInput = input.trim();
+
+            OfflinePlayer target = Bukkit.getOfflinePlayer(rawInput);
+            String correctName = target.getName() != null ? target.getName() : rawInput;
+
+            plugin.getBankService().getAccountByName(correctName).thenAccept(optAccount -> {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    if (optAccount.isEmpty()) {
+                        plugin.getMessageUtil().sendTargetNoAccount(player, correctName);
+                        new BankGuiV2(plugin).open(player);
+                        return;
+                    }
+
+                    BankAccount account = optAccount.get();
+                    if (account.getUuid().equals(player.getUniqueId())) {
+                        plugin.getMessageUtil().sendTransferToSelf(player);
+                        new BankGuiV2(plugin).open(player);
+                        return;
+                    }
+
+                    requestTransferAmount(player, account.getUuid(), account.getPlayerName());
                 });
+            });
+
+            return END_OF_CONVERSATION;
+        }
     }
+
+    /**
+     * Transfer amount prompt
+     */
+    private class TransferAmountPrompt extends ValidatingPrompt {
+        private final UUID targetUuid;
+        private final String targetName;
+
+        public TransferAmountPrompt(UUID targetUuid, String targetName) {
+            this.targetUuid = targetUuid;
+            this.targetName = targetName;
+        }
+
+        @Override
+        public @NotNull String getPromptText(@NotNull ConversationContext context) {
+            return plugin.getMessageUtil().parsePlain("<yellow>Enter amount to transfer to <white>" + targetName + "</white>:</yellow>\n<gray>Type the amount in chat, or type 'cancel' to cancel.</gray>");
+        }
+
+        @Override
+        protected boolean isInputValid(@NotNull ConversationContext context, String input) {
+            try {
+                double amount = parseAmount(input.trim());
+                return amount > 0;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+
+        @Override
+        protected String getFailedValidationText(@NotNull ConversationContext context, @NotNull String invalidInput) {
+            return plugin.getMessageUtil().parsePlain(plugin.getConfigManager().getMessages().getInvalidAmount());
+        }
+
+        @Override
+        protected Prompt acceptValidatedInput(ConversationContext context, String input) {
+            Player player = (Player) context.getForWhom();
+            double amount = parseAmount(input.trim());
+
+            plugin.getBankService().transfer(player, targetUuid, targetName, amount, "GUI transfer")
+                    .thenAccept(response -> {
+                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            if (response.isSuccess()) {
+                                plugin.getMessageUtil().sendTransferSuccess(player, amount, targetName);
+                                if (response.getFee() > 0) {
+                                    plugin.getMessageUtil().sendTransferFee(player, response.getFee());
+                                }
+                                player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                            } else {
+                                switch (response.getResult()) {
+                                    case INSUFFICIENT_FUNDS -> plugin.getMessageUtil().sendInsufficientFunds(player, response.getPreviousBalance());
+                                    case TARGET_NOT_FOUND -> plugin.getMessageUtil().sendTargetNoAccount(player, targetName);
+                                    case SELF_TRANSFER -> plugin.getMessageUtil().sendTransferToSelf(player);
+                                    case BELOW_MINIMUM -> plugin.getMessageUtil().sendTransferMinimum(player,
+                                            plugin.getConfigManager().getConfig().getTransaction().getMinTransferAmount());
+                                    case ABOVE_MAXIMUM -> plugin.getMessageUtil().sendTransferMaximum(player,
+                                            plugin.getConfigManager().getConfig().getTransaction().getMaxTransferAmount());
+                                    default -> plugin.getMessageUtil().sendTransferFailed(player);
+                                }
+                                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                            }
+                        });
+                    });
+
+            return END_OF_CONVERSATION;
+        }
+    }
+
+    // ==================== HELPER METHODS ====================
 
     private void handleTransactionResponse(Player player, TransactionResponse response, double amount, boolean isDeposit) {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
@@ -260,12 +292,26 @@ public class ChatInputHandler {
         });
     }
 
-    /**
-     * Parse amount with K/M/B suffixes
-     */
     private double parseAmount(String input) throws NumberFormatException {
-        input = input.toLowerCase().replace(",", "").replace(" ", "");
+        // Security: ป้องกัน input ยาวเกินไป (DoS attack)
+        if (input == null || input.length() > 50) {
+            throw new NumberFormatException("Input too long");
+        }
 
+        // Clean input
+        input = input.toLowerCase().replace(",", "").replace(" ", "").trim();
+
+        // Security: ป้องกัน empty string
+        if (input.isEmpty()) {
+            throw new NumberFormatException("Empty input");
+        }
+
+        // Security: ป้องกันค่าติดลบ (critical!)
+        if (input.startsWith("-")) {
+            throw new NumberFormatException("Negative values not allowed");
+        }
+
+        // Parse multiplier
         double multiplier = 1;
         if (input.endsWith("k")) {
             multiplier = 1000;
@@ -278,59 +324,30 @@ public class ChatInputHandler {
             input = input.substring(0, input.length() - 1);
         }
 
-        return Double.parseDouble(input) * multiplier;
-    }
-
-    // ==================== Inner Classes ====================
-
-    private enum InputType {
-        AMOUNT, PLAYER_NAME, TRANSFER_AMOUNT
-    }
-
-    private static class InputSession {
-        final InputType type;
-        final String action;
-        final UUID targetUuid;
-        final String targetName;
-        Listener listener;
-        BukkitTask timeoutTask;
-
-        InputSession(InputType type, String action, UUID targetUuid, String targetName) {
-            this.type = type;
-            this.action = action;
-            this.targetUuid = targetUuid;
-            this.targetName = targetName;
-        }
-    }
-
-    private class ChatListener implements Listener {
-        private final UUID playerUuid;
-
-        ChatListener(UUID playerUuid) {
-            this.playerUuid = playerUuid;
+        // Security: ตรวจสอบว่า input ที่เหลือเป็นตัวเลขที่ valid
+        if (input.isEmpty() || !input.matches("^[0-9]+(\\.[0-9]+)?$")) {
+            throw new NumberFormatException("Invalid number format");
         }
 
-        @EventHandler(priority = EventPriority.LOWEST)
-        @SuppressWarnings("deprecation")
-        public void onChat(AsyncPlayerChatEvent event) {
-            if (!event.getPlayer().getUniqueId().equals(playerUuid)) return;
-            if (!pendingSessions.containsKey(playerUuid)) return;
+        double parsed = Double.parseDouble(input);
+        double result = parsed * multiplier;
 
-            event.setCancelled(true);
-            handleInput(event.getPlayer(), event.getMessage());
+        // Security: ป้องกัน overflow และค่าสูงเกินไป
+        if (Double.isInfinite(result) || Double.isNaN(result)) {
+            throw new NumberFormatException("Value too large");
         }
 
-        @EventHandler
-        public void onQuit(PlayerQuitEvent event) {
-            if (!event.getPlayer().getUniqueId().equals(playerUuid)) return;
-
-            InputSession session = pendingSessions.remove(playerUuid);
-            if (session != null) {
-                if (session.timeoutTask != null) {
-                    session.timeoutTask.cancel();
-                }
-                HandlerList.unregisterAll(this);
-            }
+        // Security: กำหนดค่าสูงสุด (1 quadrillion = 1,000 trillion)
+        double MAX_AMOUNT = 1_000_000_000_000_000.0; // 1 quadrillion
+        if (result > MAX_AMOUNT) {
+            throw new NumberFormatException("Amount exceeds maximum limit");
         }
+
+        // Security: ป้องกันค่าติดลบอีกครั้ง (double check)
+        if (result <= 0) {
+            throw new NumberFormatException("Amount must be positive");
+        }
+
+        return result;
     }
 }

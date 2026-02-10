@@ -7,6 +7,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -280,5 +281,13 @@ public class MessageUtil {
         sendRaw(sender, messages.getHelpTransfer());
         sendRaw(sender, messages.getHelpUpgrade());
         sendRaw(sender, messages.getHelpHistory());
+    }
+
+    /**
+     * Parse MiniMessage and convert to plain text (for Conversations API)
+     */
+    public String parsePlain(String message) {
+        Component component = parse(message);
+        return PlainTextComponentSerializer.plainText().serialize(component);
     }
 }

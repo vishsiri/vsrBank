@@ -46,7 +46,10 @@ public class PlayerListener implements Listener {
                     return false;
                 });
 
+        // Clear cooldowns
         plugin.removeCooldown(player.getUniqueId());
         plugin.getBankService().clearCooldown(player.getUniqueId());
+
+        // Conversations API handles cleanup automatically, no need to manually clear sessions
     }
 }
