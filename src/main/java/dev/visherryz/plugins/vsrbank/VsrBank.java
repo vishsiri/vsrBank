@@ -15,6 +15,7 @@ import dev.visherryz.plugins.vsrbank.redis.RedisManager;
 import dev.visherryz.plugins.vsrbank.redis.RedisPubSubService;
 import dev.visherryz.plugins.vsrbank.service.BankService;
 import dev.visherryz.plugins.vsrbank.service.InterestService;
+import dev.visherryz.plugins.vsrbank.service.TierRequirementService;
 import dev.visherryz.plugins.vsrbank.task.InterestTask;
 import dev.visherryz.plugins.vsrbank.util.DiscordWebhook;
 import dev.visherryz.plugins.vsrbank.util.MessageUtil;
@@ -49,6 +50,7 @@ public final class VsrBank extends JavaPlugin {
     @Getter private MessageUtil messageUtil;
     @Getter private DiscordWebhook discordWebhook;
     @Getter private VaultHook vaultHook;
+    @Getter private TierRequirementService tierRequirementService;
     private InterestTask interestTask;
     private final Map<UUID, Long> clickCooldowns = new HashMap<>();
 
@@ -95,7 +97,8 @@ public final class VsrBank extends JavaPlugin {
             getLogger().info("All Redis services initialized");
         });
 
-        bankService = new BankService(this);
+        tierRequirementService = new TierRequirementService(this);
+        bankService = new BankService(this, tierRequirementService);
         interestService = new InterestService(this);
 
         // Register Commands
@@ -103,10 +106,6 @@ public final class VsrBank extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
         startTasks();
-
-        if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
-            new PlaceholderExpansionHook(this).register();
-        }
 
         api = new BankAPI(this);
         getServer().getServicesManager().register(BankAPI.class, api, this, ServicePriority.Normal);
@@ -142,6 +141,10 @@ public final class VsrBank extends JavaPlugin {
         if (databaseManager != null) {
             try { databaseManager.shutdown().get(); } catch (Exception ignored) {}
         }
+    }
+
+    public boolean hasPlaceholderAPI() {
+        return placeholderHook != null;
     }
 
     public void closeOpenMenus() {
@@ -189,4 +192,6 @@ public final class VsrBank extends JavaPlugin {
     public static BankAPI getAPI() {
         return api;
     }
+
+
 }

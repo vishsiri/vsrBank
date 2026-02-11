@@ -5,6 +5,9 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Wrapper class for transaction results
  * Contains both the result status and the new balance
@@ -44,6 +47,12 @@ public class TransactionResponse {
      * Additional message for the result
      */
     private String message;
+
+    /**
+     * Failed requirements (for PlaceholderAPI tier requirements) - NEW
+     */
+    @Builder.Default
+    private List<String> failedRequirements = new ArrayList<>();
 
     /**
      * Create a success response
@@ -103,6 +112,17 @@ public class TransactionResponse {
     }
 
     /**
+     * Create a failure response with failed requirements (NEW)
+     * For PlaceholderAPI tier upgrade requirements
+     */
+    public static TransactionResponse failureWithRequirements(BankResult result, List<String> failedRequirements) {
+        return TransactionResponse.builder()
+                .result(result)
+                .failedRequirements(failedRequirements != null ? failedRequirements : new ArrayList<>())
+                .build();
+    }
+
+    /**
      * Check if the transaction was successful
      */
     public boolean isSuccess() {
@@ -114,5 +134,12 @@ public class TransactionResponse {
      */
     public boolean isFailure() {
         return result == null || result.isFailure();
+    }
+
+    /**
+     * Check if this response has failed requirements (NEW)
+     */
+    public boolean hasFailedRequirements() {
+        return failedRequirements != null && !failedRequirements.isEmpty();
     }
 }

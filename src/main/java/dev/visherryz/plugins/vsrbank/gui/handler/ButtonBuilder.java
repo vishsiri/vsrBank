@@ -6,6 +6,8 @@ import dev.visherryz.plugins.vsrbank.VsrBank;
 import dev.visherryz.plugins.vsrbank.config.MessagesConfig;
 import dev.visherryz.plugins.vsrbank.gui.common.ButtonConfig;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
+import dev.visherryz.plugins.vsrbank.model.TransactionResponse;
+import dev.visherryz.plugins.vsrbank.util.TransactionErrorHandler;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
@@ -226,28 +228,9 @@ public class ButtonBuilder {
         return symbol + currencyFormat.format(amount);
     }
 
-    private void handleTransactionError(Player player,
-                                        dev.visherryz.plugins.vsrbank.model.TransactionResponse response) {
+    private void handleTransactionError(Player player, TransactionResponse response) {
         player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-
-        switch (response.getResult()) {
-            case INSUFFICIENT_FUNDS ->
-                    plugin.getMessageUtil().send(player, msg().getInsufficientFunds()
-                            .replace("{balance}", formatMoney(response.getPreviousBalance())));
-
-            case MAX_BALANCE_REACHED ->
-                    plugin.getMessageUtil().send(player, msg().getMaxBalanceReached()
-                            .replace("{max}", formatMoney(
-                                    plugin.getConfigManager().getConfig().getTier(1).getMaxBalance())));
-
-            case COOLDOWN_ACTIVE ->
-                    plugin.getMessageUtil().send(player, msg().getCooldownActive()
-                            .replace("{seconds}", String.valueOf(
-                                    plugin.getBankService().getRemainingCooldown(player.getUniqueId()))));
-
-            default ->
-                    plugin.getMessageUtil().send(player, msg().getDatabaseError());
-        }
+        new TransactionErrorHandler(plugin).handle(player, response);
     }
 
     private void playClickSound(Player player) {

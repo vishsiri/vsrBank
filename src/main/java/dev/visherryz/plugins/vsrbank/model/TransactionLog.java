@@ -135,7 +135,9 @@ public class TransactionLog {
                     String.format("%s Sent to %s: $%.2f", type.getIcon(), targetName, amount);
             case TRANSFER_IN ->
                     String.format("%s From %s: $%.2f", type.getIcon(), targetName, amount);
-            case ADMIN_GIVE, ADMIN_TAKE, ADMIN_SET ->
+            case ADMIN_SET ->
+                    String.format("%s %s by %s: Set to $%.2f", type.getIcon(), type.getDisplayName(), adminName, amount);
+            case ADMIN_GIVE, ADMIN_TAKE ->
                     String.format("%s %s by %s: $%.2f", type.getIcon(), type.getDisplayName(), adminName, amount);
             case UPGRADE ->
                     String.format("%s Tier Upgrade: -$%.2f", type.getIcon(), amount);

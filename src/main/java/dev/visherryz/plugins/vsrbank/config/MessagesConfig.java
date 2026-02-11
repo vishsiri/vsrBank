@@ -95,6 +95,16 @@ public class MessagesConfig {
     private String guiInputCancelled = "<yellow>Input cancelled.</yellow>";
     private String guiInputTimeout = "<red>Input timed out!</red>";
 
+    @Comment({"", "GUI Title Alerts (for chat input prompts)"})
+    private String titleDepositMain = "<gold>Deposit</gold>";
+    private String titleDepositSub = "<gray>Type amount in chat</gray>";
+    private String titleWithdrawMain = "<gold>Withdraw</gold>";
+    private String titleWithdrawSub = "<gray>Type amount in chat</gray>";
+    private String titleTransferPlayerMain = "<gold>Transfer</gold>";
+    private String titleTransferPlayerSub = "<gray>Type player name in chat</gray>";
+    private String titleTransferAmountMain = "<gold>Transfer to {player}</gold>";
+    private String titleTransferAmountSub = "<gray>Type amount in chat</gray>";
+
     @Comment({"", "History Messages"})
     private String historyEmpty = "<gray>No transaction history found.</gray>";
     private String historyEntry = "<gray>{date}</gray> <white>{type}</white>: <gold>{amount}</gold>";

@@ -1,9 +1,11 @@
 package dev.visherryz.plugins.vsrbank.gui;
 
 import dev.visherryz.plugins.vsrbank.VsrBank;
+import dev.visherryz.plugins.vsrbank.config.MessagesConfig;
 import dev.visherryz.plugins.vsrbank.gui.v2.BankGuiV2;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import dev.visherryz.plugins.vsrbank.model.TransactionResponse;
+import dev.visherryz.plugins.vsrbank.util.TransactionErrorHandler;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.Sound;
@@ -115,6 +117,10 @@ public class ChatInputHandler {
                     ? plugin.getConfigManager().getMessages().getGuiDepositTitle()
                     : plugin.getConfigManager().getMessages().getGuiWithdrawTitle();
 
+            // แสดง Title Alert
+            Player player = (Player) context.getForWhom();
+            showTitleAlert(player, action, null);
+
             return plugin.getMessageUtil().parsePlain("<yellow>" + title + "</yellow>\n<gray>Type the amount in chat, or type 'cancel' to cancel.</gray>");
         }
 
@@ -157,6 +163,10 @@ public class ChatInputHandler {
 
         @Override
         public @NotNull String getPromptText(@NotNull ConversationContext context) {
+            // แสดง Title Alert
+            Player player = (Player) context.getForWhom();
+            showTitleAlert(player, "transferPlayer", null);
+
             return plugin.getMessageUtil().parsePlain("<yellow>" + plugin.getConfigManager().getMessages().getGuiTransferPlayerTitle() + "</yellow>\n<gray>Type the player name in chat, or type 'cancel' to cancel.</gray>");
         }
 
@@ -215,6 +225,10 @@ public class ChatInputHandler {
 
         @Override
         public @NotNull String getPromptText(@NotNull ConversationContext context) {
+            // แสดง Title Alert
+            Player player = (Player) context.getForWhom();
+            showTitleAlert(player, "transferAmount", targetName);
+
             return plugin.getMessageUtil().parsePlain("<yellow>Enter amount to transfer to <white>" + targetName + "</white>:</yellow>\n<gray>Type the amount in chat, or type 'cancel' to cancel.</gray>");
         }
 
@@ -238,7 +252,7 @@ public class ChatInputHandler {
             Player player = (Player) context.getForWhom();
             double amount = parseAmount(input.trim());
 
-            plugin.getBankService().transfer(player, targetUuid, targetName, amount, "GUI transfer")
+            plugin.getBankService().transfer(player, targetName, amount)
                     .thenAccept(response -> {
                         plugin.getServer().getScheduler().runTask(plugin, () -> {
                             if (response.isSuccess()) {
@@ -273,20 +287,13 @@ public class ChatInputHandler {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             if (response.isSuccess()) {
                 if (isDeposit) {
-                    plugin.getMessageUtil().sendDepositSuccess(player, amount, response.getNewBalance());
+                    plugin.getMessageUtil().sendDepositSuccess(player, response.getProcessedAmount(), response.getNewBalance());
                 } else {
-                    plugin.getMessageUtil().sendWithdrawSuccess(player, amount, response.getNewBalance());
+                    plugin.getMessageUtil().sendWithdrawSuccess(player, response.getProcessedAmount(), response.getNewBalance());
                 }
                 player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
             } else {
-                switch (response.getResult()) {
-                    case INSUFFICIENT_FUNDS -> plugin.getMessageUtil().sendInsufficientFunds(player, response.getPreviousBalance());
-                    case MAX_BALANCE_REACHED -> plugin.getMessageUtil().sendMaxBalanceReached(player,
-                            plugin.getConfigManager().getConfig().getTier(1).getMaxBalance());
-                    case COOLDOWN_ACTIVE -> plugin.getMessageUtil().sendCooldownActive(player,
-                            plugin.getBankService().getRemainingCooldown(player.getUniqueId()));
-                    default -> plugin.getMessageUtil().sendDatabaseError(player);
-                }
+                new TransactionErrorHandler(plugin).handle(player, response);
                 player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
             }
         });
@@ -349,5 +356,43 @@ public class ChatInputHandler {
         }
 
         return result;
+    }
+
+    /**
+     * แสดง Title Alert ให้ Player เมื่อต้องใส่ Input
+     * @param player Player ที่จะแสดง Title
+     * @param action ประเภทของ action (deposit, withdraw, transferPlayer, transferAmount)
+     * @param targetName ชื่อผู้เล่นเป้าหมาย (สำหรับ transferAmount)
+     */
+    private void showTitleAlert(Player player, String action, String targetName) {
+        String mainTitle = "";
+        String subTitle = "";
+
+        MessagesConfig messages = plugin.getConfigManager().getMessages();
+
+        switch (action.toLowerCase()) {
+            case "deposit":
+                mainTitle = messages.getTitleDepositMain();
+                subTitle = messages.getTitleDepositSub();
+                break;
+            case "withdraw":
+                mainTitle = messages.getTitleWithdrawMain();
+                subTitle = messages.getTitleWithdrawSub();
+                break;
+            case "transferplayer":
+                mainTitle = messages.getTitleTransferPlayerMain();
+                subTitle = messages.getTitleTransferPlayerSub();
+                break;
+            case "transferamount":
+                mainTitle = messages.getTitleTransferAmountMain().replace("{player}", targetName);
+                subTitle = messages.getTitleTransferAmountSub();
+                break;
+        }
+
+        // Parse MiniMessage และแสดง Title
+        String parsedMain = plugin.getMessageUtil().parsePlain(mainTitle);
+        String parsedSub = plugin.getMessageUtil().parsePlain(subTitle);
+
+        player.sendTitle(parsedMain, parsedSub, 10, 200, 10);
     }
 }

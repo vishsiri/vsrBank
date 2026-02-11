@@ -10,6 +10,8 @@ import dev.visherryz.plugins.vsrbank.gui.v2.HistoryGuiV2;
 import dev.visherryz.plugins.vsrbank.gui.v2.TransferGuiV2;
 import dev.visherryz.plugins.vsrbank.gui.v2.UpgradeGuiV2;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
+import dev.visherryz.plugins.vsrbank.model.TransactionResponse;
+import dev.visherryz.plugins.vsrbank.util.TransactionErrorHandler;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 
@@ -219,30 +221,9 @@ public class ButtonHandler {
                 }));
     }
 
-    private void handleTransactionError(Player player, dev.visherryz.plugins.vsrbank.model.TransactionResponse response) {
+    private void handleTransactionError(Player player, TransactionResponse response) {
         playErrorSound(player);
-
-        switch (response.getResult()) {
-            case INSUFFICIENT_FUNDS ->
-                    plugin.getMessageUtil().sendInsufficientFunds(player, response.getPreviousBalance());
-
-            case MAX_BALANCE_REACHED -> {
-                // Fetch the player's actual tier to show correct max balance
-                plugin.getBankService().getAccount(player.getUniqueId()).thenAccept(optAccount -> {
-                    int tier = optAccount.map(BankAccount::getTier).orElse(1);
-                    double maxBalance = plugin.getConfigManager().getConfig().getTier(tier).getMaxBalance();
-                    plugin.getServer().getScheduler().runTask(plugin, () ->
-                            plugin.getMessageUtil().sendMaxBalanceReached(player, maxBalance));
-                });
-            }
-
-            case COOLDOWN_ACTIVE ->
-                    plugin.getMessageUtil().sendCooldownActive(player,
-                            plugin.getBankService().getRemainingCooldown(player.getUniqueId()));
-
-            default ->
-                    plugin.getMessageUtil().sendDatabaseError(player);
-        }
+        new TransactionErrorHandler(plugin).handle(player, response);
     }
 
     // ===== GUI NAVIGATION =====

@@ -5,6 +5,7 @@ import de.exlll.configlib.Configuration;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,9 +35,6 @@ public class BankConfig {
 
     @Comment({"", "Discord Webhook Settings"})
     private DiscordSettings discord = new DiscordSettings();
-
-    @Comment({"", "GUI Settings"})
-    private GuiSettings gui = new GuiSettings();
 
     @Comment({"", "Economy Settings"})
     private EconomySettings economy = new EconomySettings();
@@ -172,6 +170,20 @@ public class BankConfig {
         private int customModelData = 0;
         private List<String> lore = List.of("&7Max Balance: &f{max_balance}", "&7Interest Rate: &f{rate}x");
 
+        @Comment({
+                "Upgrade Requirements (requires PlaceholderAPI)",
+                "Supported formats:",
+                "  - 'permission:<permission>' - Check if player has permission",
+                "  - '%placeholder% <operator> <value>' - Compare placeholder value",
+                "Operators: >=, <=, >, <, ==, !=",
+                "Examples:",
+                "  - 'permission:vsrbank.tier.silver'",
+                "  - '%player_level% >= 20'",
+                "  - '%statistic_time_played% >= 72000'  # 1 hour = 72000 ticks",
+                "  - '%vault_eco_balance% >= 50000'"
+        })
+        private List<String> requirements = new ArrayList<>();
+
         public TierSettings() {}
 
         public TierSettings(String name, double maxBalance, double interestMultiplier,
@@ -182,6 +194,19 @@ public class BankConfig {
             this.upgradeCost = upgradeCost;
             this.upgradeXpCost = upgradeXpCost;
             this.displayItem = displayItem;
+            this.requirements = new ArrayList<>();
+        }
+
+        public TierSettings(String name, double maxBalance, double interestMultiplier,
+                            double upgradeCost, int upgradeXpCost, String displayItem,
+                            List<String> requirements) {
+            this.name = name;
+            this.maxBalance = maxBalance;
+            this.interestMultiplier = interestMultiplier;
+            this.upgradeCost = upgradeCost;
+            this.upgradeXpCost = upgradeXpCost;
+            this.displayItem = displayItem;
+            this.requirements = requirements != null ? requirements : new ArrayList<>();
         }
     }
 
@@ -256,11 +281,51 @@ public class BankConfig {
 
     private Map<Integer, TierSettings> createDefaultTiers() {
         Map<Integer, TierSettings> defaultTiers = new LinkedHashMap<>();
-        defaultTiers.put(1, new TierSettings("Bronze", 10000.0, 1.0, 0.0, 0, "COPPER_INGOT"));
-        defaultTiers.put(2, new TierSettings("Silver", 50000.0, 1.25, 5000.0, 100, "IRON_INGOT"));
-        defaultTiers.put(3, new TierSettings("Gold", 200000.0, 1.5, 25000.0, 500, "GOLD_INGOT"));
-        defaultTiers.put(4, new TierSettings("Diamond", 1000000.0, 2.0, 100000.0, 1000, "DIAMOND"));
-        defaultTiers.put(5, new TierSettings("Netherite", -1.0, 3.0, 500000.0, 5000, "NETHERITE_INGOT"));
+
+        // Tier 1: Bronze - No requirements
+        defaultTiers.put(1, new TierSettings(
+                "Bronze", 10000.0, 1.0, 0.0, 0, "COPPER_INGOT",
+                List.of()
+        ));
+
+        // Tier 2: Silver - Basic requirements
+        defaultTiers.put(2, new TierSettings(
+                "Silver", 50000.0, 1.25, 5000.0, 100, "IRON_INGOT",
+                List.of(
+                        "%player_level% >= 10",
+                        "%statistic_time_played% >= 36000"  // 30 minutes
+                )
+        ));
+
+        // Tier 3: Gold - Medium requirements
+        defaultTiers.put(3, new TierSettings(
+                "Gold", 200000.0, 1.5, 25000.0, 500, "GOLD_INGOT",
+                List.of(
+                        "%player_level% >= 20",
+                        "%statistic_time_played% >= 144000"  // 2 hours
+                )
+        ));
+
+        // Tier 4: Diamond - Hard requirements
+        defaultTiers.put(4, new TierSettings(
+                "Diamond", 1000000.0, 2.0, 100000.0, 1000, "DIAMOND",
+                List.of(
+                        "%player_level% >= 40",
+                        "%statistic_time_played% >= 720000",  // 10 hours
+                        "permission:vsrbank.tier.diamond"
+                )
+        ));
+
+        // Tier 5: Netherite - Ultimate requirements
+        defaultTiers.put(5, new TierSettings(
+                "Netherite", -1.0, 3.0, 500000.0, 5000, "NETHERITE_INGOT",
+                List.of(
+                        "%player_level% >= 60",
+                        "%statistic_time_played% >= 1440000",  // 20 hours
+                        "permission:vsrbank.tier.netherite"
+                )
+        ));
+
         return defaultTiers;
     }
 

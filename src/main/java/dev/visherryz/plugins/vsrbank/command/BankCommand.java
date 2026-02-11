@@ -6,6 +6,7 @@ import dev.visherryz.plugins.vsrbank.gui.ChatInputHandler;
 import dev.visherryz.plugins.vsrbank.gui.v2.HistoryGuiV2;
 import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import dev.visherryz.plugins.vsrbank.model.BankResult;
+import dev.visherryz.plugins.vsrbank.util.TransactionErrorHandler;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
@@ -17,9 +18,10 @@ import revxrsal.commands.bukkit.annotation.CommandPermission;
 public class BankCommand {
 
     private final VsrBank plugin;
-
+    private final TransactionErrorHandler errorHandler;
     public BankCommand(VsrBank plugin) {
         this.plugin = plugin;
+        this.errorHandler = new TransactionErrorHandler(plugin);
     }
 
     @Command({"bank", "b", "banking"})
@@ -66,7 +68,7 @@ public class BankCommand {
         plugin.getBankService().deposit(player, amount, null).thenAccept(r -> {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 if (r.isSuccess()) plugin.getMessageUtil().sendDepositSuccess(player, amount, r.getNewBalance());
-                else handleError(player, r.getResult());
+                else errorHandler.handle(player, r);
             });
         }).exceptionally(ex -> {
             ex.printStackTrace();
@@ -89,7 +91,7 @@ public class BankCommand {
         plugin.getBankService().withdraw(player, amount, null).thenAccept(r -> {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 if (r.isSuccess()) plugin.getMessageUtil().sendWithdrawSuccess(player, amount, r.getNewBalance());
-                else handleError(player, r.getResult());
+                else errorHandler.handle(player, r);
             });
         }).exceptionally(ex -> {
             ex.printStackTrace();
@@ -115,12 +117,12 @@ public class BankCommand {
             return;
         }
 
-        plugin.getBankService().transfer(player, target.getUniqueId(), target.getName(), amount, null)
+        plugin.getBankService().transfer(player, target.getName(), amount)
                 .thenAccept(r -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (r.isSuccess()) {
                         plugin.getMessageUtil().sendTransferSuccess(player, amount, target.getName());
                         if (r.getFee() > 0) plugin.getMessageUtil().sendTransferFee(player, r.getFee());
-                    } else handleError(player, r.getResult());
+                    } else errorHandler.handle(player, r);
                 })).exceptionally(ex -> {
                     ex.printStackTrace();
                     Bukkit.getScheduler().runTask(plugin, () ->
@@ -225,15 +227,5 @@ public class BankCommand {
                 plugin.getMessageUtil().sendDatabaseError(sender);
             }
         }));
-    }
-
-    private void handleError(Player player, BankResult result) {
-        switch (result) {
-            case INSUFFICIENT_FUNDS -> plugin.getMessageUtil().sendInsufficientFunds(player, 0);
-            case MAX_BALANCE_REACHED -> plugin.getMessageUtil().sendMaxBalanceReached(player, 0);
-            case COOLDOWN_ACTIVE -> plugin.getMessageUtil().sendCooldownActive(player, plugin.getBankService().getRemainingCooldown(player.getUniqueId()));
-            case TRANSACTION_LOCKED -> plugin.getMessageUtil().sendTransactionLocked(player);
-            default -> plugin.getMessageUtil().sendDatabaseError(player);
-        }
     }
 }

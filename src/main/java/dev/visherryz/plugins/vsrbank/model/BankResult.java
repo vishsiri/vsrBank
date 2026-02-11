@@ -20,9 +20,19 @@ public enum BankResult {
     INSUFFICIENT_FUNDS(false, "Insufficient funds in account"),
 
     /**
+     * Insufficient funds in bank account (for withdrawals/transfers)
+     */
+    INSUFFICIENT_BANK_BALANCE(false, "Insufficient balance in bank"),
+
+    /**
      * Deposit would exceed maximum balance for tier
      */
     MAX_BALANCE_REACHED(false, "Maximum balance limit reached"),
+
+    /**
+     * Recipient's balance would exceed maximum
+     */
+    RECIPIENT_MAX_BALANCE(false, "Recipient has reached maximum balance"),
 
     /**
      * Transaction is locked by Redis (another operation in progress)
@@ -55,9 +65,24 @@ public enum BankResult {
     TARGET_NOT_FOUND(false, "Target player not found"),
 
     /**
+     * Recipient not found (for transfers)
+     */
+    RECIPIENT_NOT_FOUND(false, "Recipient not found"),
+
+    /**
+     * Recipient is offline
+     */
+    RECIPIENT_OFFLINE(false, "Recipient is offline"),
+
+    /**
      * Cannot transfer to self
      */
     SELF_TRANSFER(false, "Cannot transfer to yourself"),
+
+    /**
+     * Cannot transfer to self (alternative name)
+     */
+    CANNOT_TRANSFER_SELF(false, "Cannot transfer to yourself"),
 
     /**
      * Offline transfers are disabled
@@ -95,6 +120,11 @@ public enum BankResult {
     INSUFFICIENT_XP_FOR_UPGRADE(false, "Not enough XP for upgrade"),
 
     /**
+     * PlaceholderAPI requirements not met
+     */
+    REQUIREMENTS_NOT_MET(false, "Tier requirements not met"),
+
+    /**
      * Permission denied
      */
     NO_PERMISSION(false, "Permission denied"),
@@ -103,6 +133,11 @@ public enum BankResult {
      * Vault economy not available
      */
     VAULT_NOT_AVAILABLE(false, "Vault economy not available"),
+
+    /**
+     * Vault transaction failed
+     */
+    VAULT_TRANSACTION_FAILED(false, "Vault transaction failed"),
 
     /**
      * Unexpected error

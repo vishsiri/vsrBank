@@ -12,7 +12,6 @@ import dev.visherryz.plugins.vsrbank.redis.RedisPubSubService;
 import lombok.RequiredArgsConstructor;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 
 import java.time.Instant;
@@ -24,42 +23,109 @@ import java.util.concurrent.*;
 
 /**
  * Core Bank Service - handles all banking business logic
- * Implements transaction safety with distributed locking
+ * Refactored: ใช้ helper methods ลด boilerplate ของ log/event/publish pipeline
  */
 @RequiredArgsConstructor
 public class BankService {
 
     private final VsrBank plugin;
+    private final TierRequirementService tierRequirementService;
 
-    // Cooldown tracking (per-player)
     private final Map<UUID, Long> cooldowns = new ConcurrentHashMap<>();
 
-    private DatabaseProvider getDatabase() {
+    // ==================== Accessors ====================
+
+    private DatabaseProvider db() {
         return plugin.getDatabaseManager().getProvider();
     }
 
-    private RedisPubSubService getRedisPubSub() {
-        return plugin.getRedisPubSubService();
-    }
-
-    public void clearCooldown(UUID uuid) {
-        cooldowns.remove(uuid);
-    }
-
-    private Economy getEconomy() {
+    private Economy economy() {
         return plugin.getVaultHook().getEconomy();
     }
 
-    private String getServerId() {
-        return plugin.getConfigManager().getConfig().getServerId();
+    private BankConfig config() {
+        return plugin.getConfigManager().getConfig();
+    }
+
+    private String serverId() {
+        return config().getServerId();
+    }
+
+    // ==================== Transaction Pipeline Helpers ====================
+
+    /**
+     * บันทึก log + publish Redis + fire post-event ในขั้นตอนเดียว
+     * ใช้แทน boilerplate ที่ซ้ำกันทุก operation
+     */
+    private void commitTransaction(UUID uuid, String playerName,
+                                   TransactionLog.TransactionType type,
+                                   double amount, double prevBalance, double newBalance,
+                                   String reason) {
+        commitTransaction(uuid, playerName, type, amount, prevBalance, newBalance, reason, null, null);
+    }
+
+    private void commitTransaction(UUID uuid, String playerName,
+                                   TransactionLog.TransactionType type,
+                                   double amount, double prevBalance, double newBalance,
+                                   String reason, UUID targetUuid, String targetName) {
+        // 1. Log
+        TransactionLog.TransactionLogBuilder logBuilder = TransactionLog.builder()
+                .playerUuid(uuid)
+                .playerName(playerName)
+                .type(type)
+                .amount(amount)
+                .balanceBefore(prevBalance)
+                .balanceAfter(newBalance)
+                .serverId(serverId())
+                .reason(reason)
+                .timestamp(Instant.now());
+
+        if (targetUuid != null) {
+            logBuilder.targetUuid(targetUuid).targetName(targetName);
+        }
+
+        db().insertLog(logBuilder.build());
+
+        // 2. Redis publish
+        publishBalanceUpdate(uuid, newBalance);
+
+        // 3. Post-event
+        firePostTransactionEvent(uuid, playerName, type, amount, prevBalance, newBalance);
+    }
+
+    /**
+     * บันทึก admin action: log + discord + redis + post-event
+     */
+    private void commitAdminTransaction(UUID uuid, String playerName,
+                                        TransactionLog.TransactionType type,
+                                        double amount, double prevBalance, double newBalance,
+                                        String adminName) {
+        TransactionLog log = TransactionLog.adminAction(
+                uuid, playerName, type, amount, prevBalance, newBalance, adminName, serverId(), null);
+        db().insertLog(log);
+
+        plugin.getDiscordWebhook().sendAdminAction(adminName, type.name().replace("ADMIN_", ""), playerName, amount);
+        publishBalanceUpdate(uuid, newBalance);
+        firePostTransactionEvent(uuid, playerName, type, amount, prevBalance, newBalance);
+    }
+
+    /**
+     * Quick fail helper — ลดการเขียน CompletableFuture.completedFuture ซ้ำๆ
+     */
+    private CompletableFuture<TransactionResponse> fail(BankResult result) {
+        return CompletableFuture.completedFuture(TransactionResponse.failure(result));
+    }
+
+    private CompletableFuture<TransactionResponse> fail(BankResult result, double currentBalance) {
+        return CompletableFuture.completedFuture(TransactionResponse.failure(result, currentBalance));
+    }
+
+    private CompletableFuture<TransactionResponse> succeed(double prev, double now, double processed) {
+        return CompletableFuture.completedFuture(TransactionResponse.success(prev, now, processed));
     }
 
     // ==================== Event Helpers ====================
 
-    /**
-     * Fire pre-transaction event and check if cancelled
-     * @return true if event was cancelled (transaction should stop)
-     */
     private boolean isTransactionCancelled(UUID uuid, String playerName,
                                            TransactionLog.TransactionType type,
                                            double amount, double currentBalance) {
@@ -69,165 +135,159 @@ public class BankService {
         return event.isCancelled();
     }
 
-    /**
-     * Fire post-transaction event (async, non-blocking)
-     */
     private void firePostTransactionEvent(UUID uuid, String playerName,
                                           TransactionLog.TransactionType type,
                                           double amount, double previousBalance, double newBalance) {
-        BankPostTransactionEvent event = new BankPostTransactionEvent(
-                uuid, playerName, type, amount, previousBalance, newBalance);
-        Bukkit.getPluginManager().callEvent(event);
+        Bukkit.getPluginManager().callEvent(
+                new BankPostTransactionEvent(uuid, playerName, type, amount, previousBalance, newBalance));
     }
 
-    /**
-     * Fire level up event
-     */
     private void fireLevelUpEvent(UUID uuid, String playerName,
                                   int previousTier, int newTier,
                                   String newTierName, double upgradeCost) {
-        BankLevelUpEvent event = new BankLevelUpEvent(
-                uuid, playerName, previousTier, newTier, newTierName, upgradeCost);
-        Bukkit.getPluginManager().callEvent(event);
+        Bukkit.getPluginManager().callEvent(
+                new BankLevelUpEvent(uuid, playerName, previousTier, newTier, newTierName, upgradeCost));
+    }
+
+    private void publishBalanceUpdate(UUID uuid, double newBalance) {
+        RedisPubSubService pubSub = plugin.getRedisPubSubService();
+        if (pubSub != null) {
+            pubSub.publishBalanceUpdate(uuid, newBalance);
+        }
+    }
+
+    // ==================== Cooldown ====================
+
+    public void clearCooldown(UUID uuid) {
+        cooldowns.remove(uuid);
+    }
+
+    public double getRemainingCooldown(UUID uuid) {
+        Long last = cooldowns.get(uuid);
+        if (last == null) return 0;
+
+        long cooldownMs = config().getTransaction().getCooldownMs();
+        long remaining = cooldownMs - (System.currentTimeMillis() - last);
+        return Math.max(0, remaining / 1000.0);
+    }
+
+    private boolean checkAndSetCooldown(UUID uuid) {
+        Player player = Bukkit.getPlayer(uuid);
+        if (player != null && player.hasPermission("vsrbank.bypass.cooldown")) {
+            return true;
+        }
+
+        long now = System.currentTimeMillis();
+        long cooldownMs = config().getTransaction().getCooldownMs();
+
+        boolean[] allowed = {false};
+        cooldowns.compute(uuid, (key, last) -> {
+            if (last == null || (now - last) >= cooldownMs) {
+                allowed[0] = true;
+                return now;
+            }
+            return last;
+        });
+        return allowed[0];
     }
 
     // ==================== Account Management ====================
 
     public CompletableFuture<BankAccount> getOrCreateAccount(UUID uuid, String playerName) {
-        return getDatabase().getAccount(uuid).thenCompose(optAccount -> {
-            if (optAccount.isPresent()) {
-                BankAccount account = optAccount.get();
+        return db().getAccount(uuid).thenCompose(opt -> {
+            if (opt.isPresent()) {
+                BankAccount account = opt.get();
                 if (!account.getPlayerName().equals(playerName)) {
-                    getDatabase().updatePlayerName(uuid, playerName);
+                    db().updatePlayerName(uuid, playerName);
                     account.setPlayerName(playerName);
                 }
                 return CompletableFuture.completedFuture(account);
             } else {
-                BankAccount newAccount = BankAccount.createNew(uuid, playerName);
-                return getDatabase().createAccount(newAccount);
+                return db().createAccount(BankAccount.createNew(uuid, playerName));
             }
         });
     }
 
     public CompletableFuture<Boolean> hasAccount(UUID uuid) {
-        return getDatabase().accountExists(uuid);
+        return db().accountExists(uuid);
     }
 
     public CompletableFuture<Optional<BankAccount>> getAccount(UUID uuid) {
-        return getDatabase().getAccount(uuid);
+        return db().getAccount(uuid);
     }
 
     public CompletableFuture<Optional<BankAccount>> getAccountByName(String playerName) {
-        return getDatabase().getAccountByName(playerName);
+        return db().getAccountByName(playerName);
     }
 
     public CompletableFuture<Double> getBalance(UUID uuid) {
-        return getDatabase().getBalance(uuid);
+        return db().getBalance(uuid);
     }
 
     // ==================== Deposit ====================
 
     public CompletableFuture<TransactionResponse> deposit(Player player, double amount, String reason) {
         UUID uuid = player.getUniqueId();
-        BankConfig config = plugin.getConfigManager().getConfig();
-        BankConfig.TransactionSettings txSettings = config.getTransaction();
+        BankConfig.TransactionSettings tx = config().getTransaction();
 
-        if (amount <= 0) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.INVALID_AMOUNT));
-        }
+        // Pre-validation
+        if (amount <= 0) return fail(BankResult.INVALID_AMOUNT);
+        if (amount < tx.getMinDepositAmount()) return fail(BankResult.BELOW_MINIMUM);
+        if (!checkAndSetCooldown(uuid)) return fail(BankResult.COOLDOWN_ACTIVE);
 
-        if (amount < txSettings.getMinDepositAmount()) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.BELOW_MINIMUM));
-        }
+        Economy eco = economy();
+        if (eco == null) return fail(BankResult.VAULT_NOT_AVAILABLE);
+        if (!eco.has(player, amount)) return fail(BankResult.INSUFFICIENT_FUNDS);
 
-        if (!checkCooldown(uuid)) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.COOLDOWN_ACTIVE));
-        }
+        return executeWithLock(uuid, () ->
+                getAccount(uuid).thenCompose(opt -> {
+                    if (opt.isEmpty()) return fail(BankResult.ACCOUNT_NOT_FOUND);
 
-        Economy economy = getEconomy();
-        if (economy == null) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.VAULT_NOT_AVAILABLE));
-        }
+                    BankAccount account = opt.get();
+                    double prevBalance = account.getBalance();
 
-        if (!economy.has(player, amount)) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.INSUFFICIENT_FUNDS));
-        }
-
-        return executeWithLock(uuid, () -> {
-            return getAccount(uuid).thenCompose(optAccount -> {
-                if (optAccount.isEmpty()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.ACCOUNT_NOT_FOUND));
-                }
-
-                BankAccount account = optAccount.get();
-                double previousBalance = account.getBalance();
-
-                // Fire Pre-Transaction Event
-                if (isTransactionCancelled(uuid, player.getName(),
-                        TransactionLog.TransactionType.DEPOSIT, amount, previousBalance)) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.TRANSACTION_LOCKED)); // Event cancelled
-                }
-
-                // Check max balance and auto-clamp amount to fit remaining space
-                BankConfig.TierSettings tier = config.getTier(account.getTier());
-                double maxBalance = tier.getMaxBalance();
-                double depositAmount = amount;
-
-                // maxBalance < 0 means unlimited (e.g. Netherite tier)
-                if (maxBalance >= 0 && !player.hasPermission("vsrbank.bypass.maxbalance")) {
-                    double remaining = maxBalance - previousBalance;
-
-                    if (remaining <= 0) {
-                        // Already at max, cannot deposit anything
-                        return CompletableFuture.completedFuture(
-                                TransactionResponse.failure(BankResult.MAX_BALANCE_REACHED, previousBalance));
+                    if (isTransactionCancelled(uuid, player.getName(),
+                            TransactionLog.TransactionType.DEPOSIT, amount, prevBalance)) {
+                        return fail(BankResult.TRANSACTION_LOCKED);
                     }
 
-                    // Clamp deposit to remaining space
-                    if (depositAmount > remaining) {
-                        depositAmount = Math.floor(remaining * 100.0) / 100.0;
+                    // Clamp to max balance
+                    BankConfig.TierSettings tier = config().getTier(account.getTier());
+                    double maxBalance = tier.getMaxBalance();
+                    double depositAmount = amount;
+
+                    if (maxBalance >= 0 && !player.hasPermission("vsrbank.bypass.maxbalance")) {
+                        double remaining = maxBalance - prevBalance;
+                        if (remaining <= 0) return fail(BankResult.MAX_BALANCE_REACHED);
+                        if (amount > remaining) depositAmount = remaining;
                     }
 
-                    // After clamping, check if still meets minimum deposit
-                    if (depositAmount < txSettings.getMinDepositAmount()) {
-                        return CompletableFuture.completedFuture(
-                                TransactionResponse.failure(BankResult.MAX_BALANCE_REACHED, previousBalance));
-                    }
-                }
+                    final double finalAmount = depositAmount;
 
-                // Withdraw from Vault (use clamped depositAmount)
-                final double finalDepositAmount = depositAmount;
-                if (!economy.withdrawPlayer(player, finalDepositAmount).transactionSuccess()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.INSUFFICIENT_FUNDS));
-                }
+                    // Vault withdraw → Bank deposit
+                    return CompletableFuture.supplyAsync(() ->
+                            eco.withdrawPlayer(player, finalAmount).transactionSuccess()
+                    ).thenCompose(vaultOk -> {
+                        if (!vaultOk) return fail(BankResult.VAULT_TRANSACTION_FAILED);
 
-                // Deposit to bank (ATOMIC)
-                return getDatabase().updateBalanceAtomic(uuid, finalDepositAmount).thenApply(newBalance -> {
-                    if (newBalance < 0) {
-                        economy.depositPlayer(player, finalDepositAmount); // Rollback
-                        return TransactionResponse.failure(BankResult.DATABASE_ERROR);
-                    }
+                        return db().updateBalanceAtomic(uuid, finalAmount).thenApply(newBalance -> {
+                            if (newBalance < 0) {
+                                eco.depositPlayer(player, finalAmount); // rollback vault
+                                return TransactionResponse.failure(BankResult.DATABASE_ERROR);
+                            }
 
-                    // Log transaction
-                    TransactionLog log = TransactionLog.deposit(
-                            uuid, player.getName(), finalDepositAmount, previousBalance, newBalance, getServerId());
-                    log.setReason(reason);
-                    getDatabase().insertLog(log);
+                            commitTransaction(uuid, player.getName(),
+                                    TransactionLog.TransactionType.DEPOSIT,
+                                    finalAmount, prevBalance, newBalance,
+                                    reason != null ? reason : "Deposit");
 
-                    // Publish to Redis
-                    getRedisPubSub().publishBalanceUpdate(uuid, newBalance);
-
-                    // Fire Post-Transaction Event
-                    firePostTransactionEvent(uuid, player.getName(),
-                            TransactionLog.TransactionType.DEPOSIT, finalDepositAmount, previousBalance, newBalance);
-
-                    setCooldown(uuid);
-                    return TransactionResponse.success(previousBalance, newBalance, finalDepositAmount);
-                });
-            });
+                            return TransactionResponse.success(prevBalance, newBalance, finalAmount);
+                        });
+                    });
+                })
+        ).thenApply(response -> {
+            if (!response.isSuccess()) clearCooldown(uuid);
+            return response;
         });
     }
 
@@ -235,214 +295,181 @@ public class BankService {
 
     public CompletableFuture<TransactionResponse> withdraw(Player player, double amount, String reason) {
         UUID uuid = player.getUniqueId();
-        BankConfig config = plugin.getConfigManager().getConfig();
-        BankConfig.TransactionSettings txSettings = config.getTransaction();
+        BankConfig.TransactionSettings tx = config().getTransaction();
 
-        if (amount <= 0) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.INVALID_AMOUNT));
+        // Pre-validation
+        if (amount <= 0) return fail(BankResult.INVALID_AMOUNT);
+        if (amount < tx.getMinWithdrawAmount()) return fail(BankResult.BELOW_MINIMUM);
+        if (!checkAndSetCooldown(uuid)) return fail(BankResult.COOLDOWN_ACTIVE);
+
+        Economy eco = economy();
+        if (eco == null) {
+            clearCooldown(uuid);
+            return fail(BankResult.VAULT_NOT_AVAILABLE);
         }
 
-        if (amount < txSettings.getMinWithdrawAmount()) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.BELOW_MINIMUM));
-        }
-
-        if (!checkCooldown(uuid)) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.COOLDOWN_ACTIVE));
-        }
-
-        Economy economy = getEconomy();
-        if (economy == null) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.VAULT_NOT_AVAILABLE));
-        }
-
-        return executeWithLock(uuid, () -> {
-            return getAccount(uuid).thenCompose(optAccount -> {
-                if (optAccount.isEmpty()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.ACCOUNT_NOT_FOUND));
-                }
-
-                BankAccount account = optAccount.get();
-                double previousBalance = account.getBalance();
-
-                // Fire Pre-Transaction Event
-                if (isTransactionCancelled(uuid, player.getName(),
-                        TransactionLog.TransactionType.WITHDRAW, amount, previousBalance)) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
-                }
-
-                if (!account.hasBalance(amount)) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.INSUFFICIENT_FUNDS, previousBalance));
-                }
-
-                // Withdraw from bank (ATOMIC)
-                return getDatabase().updateBalanceAtomic(uuid, -amount).thenApply(newBalance -> {
-                    if (newBalance < 0) {
-                        return TransactionResponse.failure(BankResult.DATABASE_ERROR);
+        return executeWithLock(uuid, () ->
+                getAccount(uuid).thenCompose(opt -> {
+                    if (opt.isEmpty()) {
+                        clearCooldown(uuid);
+                        return fail(BankResult.ACCOUNT_NOT_FOUND);
                     }
 
-                    // Deposit to Vault
-                    economy.depositPlayer(player, amount);
+                    BankAccount account = opt.get();
+                    double prevBalance = account.getBalance();
 
-                    // Log
-                    TransactionLog log = TransactionLog.withdraw(
-                            uuid, player.getName(), amount, previousBalance, newBalance, getServerId());
-                    log.setReason(reason);
-                    getDatabase().insertLog(log);
+                    if (isTransactionCancelled(uuid, player.getName(),
+                            TransactionLog.TransactionType.WITHDRAW, amount, prevBalance)) {
+                        clearCooldown(uuid);
+                        return fail(BankResult.TRANSACTION_LOCKED);
+                    }
 
-                    // Publish to Redis
-                    getRedisPubSub().publishBalanceUpdate(uuid, newBalance);
+                    if (!account.hasBalance(amount)) {
+                        clearCooldown(uuid);
+                        return fail(BankResult.INSUFFICIENT_BANK_BALANCE);
+                    }
 
-                    // Fire Post-Transaction Event
-                    firePostTransactionEvent(uuid, player.getName(),
-                            TransactionLog.TransactionType.WITHDRAW, amount, previousBalance, newBalance);
+                    // Bank debit → Vault deposit
+                    return db().updateBalanceAtomic(uuid, -amount).thenCompose(newBalance -> {
+                        if (newBalance < 0) {
+                            plugin.getLogger().severe(String.format(
+                                    "CRITICAL: Withdraw balance went negative! UUID=%s, Prev=%.2f, Amount=%.2f, New=%.2f",
+                                    uuid, prevBalance, amount, newBalance));
+                            db().setBalance(uuid, prevBalance);
+                            clearCooldown(uuid);
+                            return fail(BankResult.INSUFFICIENT_BANK_BALANCE);
+                        }
 
-                    setCooldown(uuid);
-                    return TransactionResponse.success(previousBalance, newBalance, amount);
-                });
-            });
+                        return CompletableFuture.supplyAsync(() ->
+                                eco.depositPlayer(player, amount).transactionSuccess()
+                        ).thenCompose(vaultOk -> {
+                            if (!vaultOk) {
+                                return db().updateBalanceAtomic(uuid, amount).thenApply(rollback -> {
+                                    plugin.getLogger().warning("Withdraw Vault deposit failed for " +
+                                            player.getName() + ", rolled back to " + rollback);
+                                    clearCooldown(uuid);
+                                    return TransactionResponse.failure(BankResult.VAULT_TRANSACTION_FAILED);
+                                });
+                            }
+
+                            commitTransaction(uuid, player.getName(),
+                                    TransactionLog.TransactionType.WITHDRAW,
+                                    amount, prevBalance, newBalance,
+                                    reason != null ? reason : "Withdrawal");
+
+                            return succeed(prevBalance, newBalance, amount);
+                        });
+                    });
+                })
+        ).thenApply(response -> {
+            if (!response.isSuccess()) clearCooldown(uuid);
+            return response;
         });
     }
 
     // ==================== Transfer ====================
 
-    public CompletableFuture<TransactionResponse> transfer(Player sender, UUID receiverUuid,
-                                                           String receiverName, double amount, String reason) {
+    public CompletableFuture<TransactionResponse> transfer(Player sender, String recipientName, double amount) {
         UUID senderUuid = sender.getUniqueId();
-        BankConfig config = plugin.getConfigManager().getConfig();
-        BankConfig.TransactionSettings txSettings = config.getTransaction();
+        BankConfig.TransactionSettings tx = config().getTransaction();
 
-        if (amount <= 0) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.INVALID_AMOUNT));
-        }
+        // Pre-validation
+        if (amount <= 0) return fail(BankResult.INVALID_AMOUNT);
+        if (amount < tx.getMinTransferAmount()) return fail(BankResult.BELOW_MINIMUM);
+        if (tx.getMaxTransferAmount() > 0 && amount > tx.getMaxTransferAmount()) return fail(BankResult.ABOVE_MAXIMUM);
+        if (!checkAndSetCooldown(senderUuid)) return fail(BankResult.COOLDOWN_ACTIVE);
 
-        if (senderUuid.equals(receiverUuid)) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.SELF_TRANSFER));
-        }
+        double fee = amount * tx.getTransferFeePercent();
+        double totalDeducted = amount + fee;
 
-        if (amount < txSettings.getMinTransferAmount()) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.BELOW_MINIMUM));
-        }
+        return getAccountByName(recipientName).thenCompose(optRecipient -> {
+            if (optRecipient.isEmpty()) return fail(BankResult.RECIPIENT_NOT_FOUND);
 
-        if (txSettings.getMaxTransferAmount() > 0 && amount > txSettings.getMaxTransferAmount()) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.ABOVE_MAXIMUM));
-        }
+            BankAccount recipientPreCheck = optRecipient.get();
+            UUID recipientUuid = recipientPreCheck.getUuid();
 
-        OfflinePlayer receiver = Bukkit.getOfflinePlayer(receiverUuid);
-        if (!txSettings.isAllowOfflineTransfer() && !receiver.isOnline()) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.OFFLINE_TRANSFER_DISABLED));
-        }
+            if (senderUuid.equals(recipientUuid)) return fail(BankResult.CANNOT_TRANSFER_SELF);
 
-        if (!checkCooldown(senderUuid)) {
-            return CompletableFuture.completedFuture(TransactionResponse.failure(BankResult.COOLDOWN_ACTIVE));
-        }
+            Player recipientPlayer = Bukkit.getPlayer(recipientUuid);
+            if (!tx.isAllowOfflineTransfer() && recipientPlayer == null) {
+                return fail(BankResult.RECIPIENT_OFFLINE);
+            }
 
-        double fee = amount * txSettings.getTransferFeePercent();
-        double totalDeduct = amount + fee;
+            return executeWithDualLock(senderUuid, recipientUuid, () ->
+                    getAccount(senderUuid).thenCompose(optSender -> {
+                        if (optSender.isEmpty()) return fail(BankResult.ACCOUNT_NOT_FOUND);
 
-        return executeWithLock(senderUuid, () -> {
-            return getAccount(senderUuid).thenCompose(senderOpt -> {
-                if (senderOpt.isEmpty()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.ACCOUNT_NOT_FOUND));
-                }
+                        return getAccount(recipientUuid).thenCompose(optRecipientFresh -> {
+                            if (optRecipientFresh.isEmpty()) return fail(BankResult.RECIPIENT_NOT_FOUND);
 
-                return getAccount(receiverUuid).thenCompose(receiverOpt -> {
-                    if (receiverOpt.isEmpty()) {
-                        return CompletableFuture.completedFuture(
-                                TransactionResponse.failure(BankResult.TARGET_NOT_FOUND));
-                    }
+                            BankAccount senderAcc = optSender.get();
+                            BankAccount recipientAcc = optRecipientFresh.get();
+                            double senderPrev = senderAcc.getBalance();
+                            double recipientPrev = recipientAcc.getBalance();
 
-                    BankAccount senderAccount = senderOpt.get();
-                    BankAccount receiverAccount = receiverOpt.get();
-
-                    double senderBefore = senderAccount.getBalance();
-                    double receiverBefore = receiverAccount.getBalance();
-
-                    // Fire Pre-Transaction Event for sender
-                    if (isTransactionCancelled(senderUuid, sender.getName(),
-                            TransactionLog.TransactionType.TRANSFER_OUT, totalDeduct, senderBefore)) {
-                        return CompletableFuture.completedFuture(
-                                TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
-                    }
-
-                    if (!senderAccount.hasBalance(totalDeduct)) {
-                        return CompletableFuture.completedFuture(
-                                TransactionResponse.failure(BankResult.INSUFFICIENT_FUNDS, senderBefore));
-                    }
-
-                    BankConfig.TierSettings receiverTier = config.getTier(receiverAccount.getTier());
-                    if (!receiverAccount.canDeposit(amount, receiverTier.getMaxBalance())) {
-                        return CompletableFuture.completedFuture(
-                                TransactionResponse.failure(BankResult.MAX_BALANCE_REACHED));
-                    }
-
-                    // Execute atomic transfer
-                    return getDatabase().transferAtomic(senderUuid, receiverUuid, amount).thenCompose(success -> {
-                        if (!success) {
-                            return CompletableFuture.completedFuture(
-                                    TransactionResponse.failure(BankResult.DATABASE_ERROR));
-                        }
-
-                        CompletableFuture<Void> feeFuture;
-                        if (fee > 0) {
-                            feeFuture = getDatabase().updateBalanceAtomic(senderUuid, -fee).thenAccept(v -> {});
-                        } else {
-                            feeFuture = CompletableFuture.completedFuture(null);
-                        }
-
-                        return feeFuture.thenApply(v -> {
-                            double senderAfter = senderBefore - totalDeduct;
-                            double receiverAfter = receiverBefore + amount;
-
-                            // Log both
-                            TransactionLog[] logs = TransactionLog.transfer(
-                                    senderUuid, sender.getName(), senderBefore, senderAfter,
-                                    receiverUuid, receiverName, receiverBefore, receiverAfter,
-                                    amount, getServerId()
-                            );
-                            getDatabase().insertLog(logs[0]);
-                            getDatabase().insertLog(logs[1]);
-
-                            if (fee > 0) {
-                                TransactionLog feeLog = TransactionLog.builder()
-                                        .playerUuid(senderUuid)
-                                        .playerName(sender.getName())
-                                        .type(TransactionLog.TransactionType.FEE)
-                                        .amount(fee)
-                                        .balanceBefore(senderBefore - amount)
-                                        .balanceAfter(senderAfter)
-                                        .serverId(getServerId())
-                                        .reason("Transfer fee")
-                                        .timestamp(Instant.now())
-                                        .build();
-                                getDatabase().insertLog(feeLog);
+                            if (isTransactionCancelled(senderUuid, sender.getName(),
+                                    TransactionLog.TransactionType.TRANSFER_OUT, totalDeducted, senderPrev)) {
+                                return fail(BankResult.TRANSACTION_LOCKED);
                             }
 
-                            // Publish to Redis
-                            getRedisPubSub().publishBalanceUpdate(senderUuid, senderAfter);
-                            getRedisPubSub().publishBalanceUpdate(receiverUuid, receiverAfter);
-
-                            // Fire Post-Transaction Events
-                            firePostTransactionEvent(senderUuid, sender.getName(),
-                                    TransactionLog.TransactionType.TRANSFER_OUT, amount, senderBefore, senderAfter);
-                            firePostTransactionEvent(receiverUuid, receiverName,
-                                    TransactionLog.TransactionType.TRANSFER_IN, amount, receiverBefore, receiverAfter);
-
-                            // Notify receiver
-                            Player receiverPlayer = Bukkit.getPlayer(receiverUuid);
-                            if (receiverPlayer != null && receiverPlayer.isOnline()) {
-                                plugin.getMessageUtil().sendTransferReceived(receiverPlayer, sender.getName(), amount);
+                            if (!senderAcc.hasBalance(totalDeducted)) {
+                                return fail(BankResult.INSUFFICIENT_BANK_BALANCE);
                             }
 
-                            setCooldown(senderUuid);
-                            return TransactionResponse.successWithFee(senderBefore, senderAfter, amount, fee);
+                            // Check recipient max balance
+                            BankConfig.TierSettings recipientTier = config().getTier(recipientAcc.getTier());
+                            double recipientMax = recipientTier.getMaxBalance();
+                            if (recipientMax >= 0 && !recipientAcc.canDeposit(amount, recipientMax)) {
+                                return fail(BankResult.RECIPIENT_MAX_BALANCE);
+                            }
+
+                            // Step 1: Deduct sender
+                            return db().updateBalanceAtomic(senderUuid, -totalDeducted).thenCompose(senderNew -> {
+                                if (senderNew < 0) {
+                                    plugin.getLogger().severe(String.format(
+                                            "CRITICAL: Transfer sender negative! Sender=%s, Amount=%.2f, New=%.2f",
+                                            senderUuid, totalDeducted, senderNew));
+                                    db().setBalance(senderUuid, senderPrev);
+                                    return fail(BankResult.INSUFFICIENT_BANK_BALANCE);
+                                }
+
+                                // Step 2: Credit recipient
+                                return db().updateBalanceAtomic(recipientUuid, amount).thenCompose(recipientNew -> {
+                                    if (recipientNew < 0) {
+                                        return db().updateBalanceAtomic(senderUuid, totalDeducted).thenApply(rollback -> {
+                                            plugin.getLogger().warning("Transfer failed for recipient " +
+                                                    recipientName + ", rolled back sender to " + rollback);
+                                            return TransactionResponse.failure(BankResult.DATABASE_ERROR);
+                                        });
+                                    }
+
+                                    // Commit both sides
+                                    commitTransaction(senderUuid, sender.getName(),
+                                            TransactionLog.TransactionType.TRANSFER_OUT,
+                                            -totalDeducted, senderPrev, senderNew,
+                                            "Transfer to " + recipientName,
+                                            recipientUuid, recipientName);
+
+                                    commitTransaction(recipientUuid, recipientName,
+                                            TransactionLog.TransactionType.TRANSFER_IN,
+                                            amount, recipientPrev, recipientNew,
+                                            "Transfer from " + sender.getName(),
+                                            senderUuid, sender.getName());
+
+                                    if (recipientPlayer != null) {
+                                        plugin.getMessageUtil().sendTransferReceived(
+                                                recipientPlayer, sender.getName(), amount);
+                                    }
+
+                                    return succeed(senderPrev, senderNew, totalDeducted);
+                                });
+                            });
                         });
-                    });
-                });
-            });
+                    })
+            );
+        }).thenApply(response -> {
+            if (!response.isSuccess()) clearCooldown(senderUuid);
+            return response;
         });
     }
 
@@ -450,267 +477,238 @@ public class BankService {
 
     public CompletableFuture<TransactionResponse> upgradeTier(Player player) {
         UUID uuid = player.getUniqueId();
-        BankConfig config = plugin.getConfigManager().getConfig();
 
-        return executeWithLock(uuid, () -> {
-            return getAccount(uuid).thenCompose(optAccount -> {
-                if (optAccount.isEmpty()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.ACCOUNT_NOT_FOUND));
-                }
+        return executeWithLock(uuid, () ->
+                getAccount(uuid).thenCompose(opt -> {
+                    if (opt.isEmpty()) return fail(BankResult.ACCOUNT_NOT_FOUND);
 
-                BankAccount account = optAccount.get();
-                int currentTier = account.getTier();
-                int nextTier = currentTier + 1;
+                    BankAccount account = opt.get();
+                    int currentTier = account.getTier();
+                    int nextTier = currentTier + 1;
 
-                if (nextTier > config.getMaxTier()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.MAX_TIER_REACHED));
-                }
+                    if (nextTier > config().getMaxTier()) return fail(BankResult.MAX_TIER_REACHED);
 
-                BankConfig.TierSettings nextTierSettings = config.getTier(nextTier);
-                double upgradeCost = nextTierSettings.getUpgradeCost();
-                int upgradeXp = nextTierSettings.getUpgradeXpCost();
+                    BankConfig.TierSettings nextSettings = config().getTier(nextTier);
+                    double cost = nextSettings.getUpgradeCost();
+                    int xpCost = nextSettings.getUpgradeXpCost();
+                    double prevBalance = account.getBalance();
 
-                double previousBalance = account.getBalance();
-
-                // Fire Pre-Transaction Event
-                if (isTransactionCancelled(uuid, player.getName(),
-                        TransactionLog.TransactionType.UPGRADE, upgradeCost, previousBalance)) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
-                }
-
-                if (!account.hasBalance(upgradeCost)) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.INSUFFICIENT_MONEY_FOR_UPGRADE, previousBalance));
-                }
-
-                if (player.getTotalExperience() < upgradeXp) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.INSUFFICIENT_XP_FOR_UPGRADE));
-                }
-
-                // Deduct costs
-                return getDatabase().updateBalanceAtomic(uuid, -upgradeCost).thenCompose(newBalance -> {
-                    if (newBalance < 0) {
-                        return CompletableFuture.completedFuture(
-                                TransactionResponse.failure(BankResult.DATABASE_ERROR));
+                    if (isTransactionCancelled(uuid, player.getName(),
+                            TransactionLog.TransactionType.UPGRADE, cost, prevBalance)) {
+                        return fail(BankResult.TRANSACTION_LOCKED);
                     }
 
-                    // Deduct XP (on main thread)
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        player.giveExp(-upgradeXp);
-                    });
+                    // PlaceholderAPI requirements
+                    TierRequirementService.RequirementCheckResult reqResult =
+                            tierRequirementService.checkRequirements(player, nextSettings);
+                    if (reqResult.hasFailed()) {
+                        return CompletableFuture.completedFuture(
+                                TransactionResponse.failureWithRequirements(
+                                        BankResult.REQUIREMENTS_NOT_MET, reqResult.getFailedRequirements()));
+                    }
 
-                    return getDatabase().updateTier(uuid, nextTier).thenApply(success -> {
-                        if (!success) {
-                            getDatabase().updateBalanceAtomic(uuid, upgradeCost); // Rollback
-                            return TransactionResponse.failure(BankResult.DATABASE_ERROR);
+                    if (!account.hasBalance(cost)) return fail(BankResult.INSUFFICIENT_MONEY_FOR_UPGRADE, prevBalance);
+                    if (player.getTotalExperience() < xpCost) return fail(BankResult.INSUFFICIENT_XP_FOR_UPGRADE);
+
+                    // Deduct money
+                    return db().updateBalanceAtomic(uuid, -cost).thenCompose(newBalance -> {
+                        if (newBalance < 0) {
+                            plugin.getLogger().severe(String.format(
+                                    "CRITICAL: Upgrade balance negative! UUID=%s, Prev=%.2f, Cost=%.2f, New=%.2f",
+                                    uuid, prevBalance, cost, newBalance));
+                            db().setBalance(uuid, prevBalance);
+                            return fail(BankResult.INSUFFICIENT_MONEY_FOR_UPGRADE, prevBalance);
                         }
 
-                        // Log
-                        TransactionLog log = TransactionLog.builder()
-                                .playerUuid(uuid)
-                                .playerName(player.getName())
-                                .type(TransactionLog.TransactionType.UPGRADE)
-                                .amount(upgradeCost)
-                                .balanceBefore(previousBalance)
-                                .balanceAfter(newBalance)
-                                .serverId(getServerId())
-                                .reason("Upgraded to " + nextTierSettings.getName())
-                                .timestamp(Instant.now())
-                                .build();
-                        getDatabase().insertLog(log);
+                        // Deduct XP on main thread
+                        return supplyAsyncMain(() -> {
+                            player.giveExp(-xpCost);
+                            return true;
+                        }).thenCompose(xpOk ->
+                                db().updateTier(uuid, nextTier).thenCompose(success -> {
+                                    if (!success) {
+                                        // Rollback money + XP
+                                        return db().updateBalanceAtomic(uuid, cost).thenCompose(rollback ->
+                                                supplyAsyncMain(() -> {
+                                                    player.giveExp(xpCost);
+                                                    plugin.getLogger().warning("Tier update failed for " +
+                                                            player.getName() + " - rolled back");
+                                                    return TransactionResponse.failure(BankResult.DATABASE_ERROR);
+                                                })
+                                        );
+                                    }
 
-                        // Publish to Redis
-                        getRedisPubSub().publishBalanceUpdate(uuid, newBalance);
+                                    commitTransaction(uuid, player.getName(),
+                                            TransactionLog.TransactionType.UPGRADE,
+                                            cost, prevBalance, newBalance,
+                                            "Upgraded to " + nextSettings.getName());
 
-                        // Fire Post-Transaction Event
-                        firePostTransactionEvent(uuid, player.getName(),
-                                TransactionLog.TransactionType.UPGRADE, upgradeCost, previousBalance, newBalance);
+                                    fireLevelUpEvent(uuid, player.getName(),
+                                            currentTier, nextTier, nextSettings.getName(), cost);
 
-                        // Fire Level Up Event
-                        fireLevelUpEvent(uuid, player.getName(),
-                                currentTier, nextTier, nextTierSettings.getName(), upgradeCost);
-
-                        return TransactionResponse.success(previousBalance, newBalance, upgradeCost);
+                                    return succeed(prevBalance, newBalance, cost);
+                                })
+                        );
                     });
-                });
-            });
-        });
+                })
+        );
     }
 
     // ==================== Admin Operations ====================
 
     public CompletableFuture<TransactionResponse> adminGive(UUID targetUuid, String targetName,
                                                             double amount, String adminName) {
-        return executeWithLock(targetUuid, () -> {
-            return getAccount(targetUuid).thenCompose(optAccount -> {
-                if (optAccount.isEmpty()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.ACCOUNT_NOT_FOUND));
-                }
+        return executeWithLock(targetUuid, () ->
+                getAccount(targetUuid).thenCompose(opt -> {
+                    if (opt.isEmpty()) return fail(BankResult.ACCOUNT_NOT_FOUND);
 
-                BankAccount account = optAccount.get();
-                double previousBalance = account.getBalance();
+                    double prevBalance = opt.get().getBalance();
 
-                return getDatabase().updateBalanceAtomic(targetUuid, amount).thenApply(newBalance -> {
-                    if (newBalance < 0) {
-                        return TransactionResponse.failure(BankResult.DATABASE_ERROR);
-                    }
+                    return db().updateBalanceAtomic(targetUuid, amount).thenApply(newBalance -> {
+                        if (newBalance < 0) return TransactionResponse.failure(BankResult.DATABASE_ERROR);
 
-                    // Log
-                    TransactionLog log = TransactionLog.adminAction(
-                            targetUuid, targetName, TransactionLog.TransactionType.ADMIN_GIVE,
-                            amount, previousBalance, newBalance, adminName, getServerId(), null);
-                    getDatabase().insertLog(log);
+                        commitAdminTransaction(targetUuid, targetName,
+                                TransactionLog.TransactionType.ADMIN_GIVE,
+                                amount, prevBalance, newBalance, adminName);
 
-                    // Discord
-                    plugin.getDiscordWebhook().sendAdminAction(adminName, "GIVE", targetName, amount);
-
-                    // Publish
-                    getRedisPubSub().publishBalanceUpdate(targetUuid, newBalance);
-
-                    // Fire Post Event
-                    firePostTransactionEvent(targetUuid, targetName,
-                            TransactionLog.TransactionType.ADMIN_GIVE, amount, previousBalance, newBalance);
-
-                    return TransactionResponse.success(previousBalance, newBalance, amount);
-                });
-            });
-        });
+                        return TransactionResponse.success(prevBalance, newBalance, amount);
+                    });
+                })
+        );
     }
 
     public CompletableFuture<TransactionResponse> adminTake(UUID targetUuid, String targetName,
                                                             double amount, String adminName) {
-        return executeWithLock(targetUuid, () -> {
-            return getAccount(targetUuid).thenCompose(optAccount -> {
-                if (optAccount.isEmpty()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.ACCOUNT_NOT_FOUND));
-                }
+        return executeWithLock(targetUuid, () ->
+                getAccount(targetUuid).thenCompose(opt -> {
+                    if (opt.isEmpty()) return fail(BankResult.ACCOUNT_NOT_FOUND);
 
-                BankAccount account = optAccount.get();
-                double previousBalance = account.getBalance();
-                double actualAmount = Math.min(amount, previousBalance);
+                    BankAccount account = opt.get();
+                    double prevBalance = account.getBalance();
+                    double actualAmount = Math.min(amount, prevBalance);
 
-                return getDatabase().updateBalanceAtomic(targetUuid, -actualAmount).thenApply(newBalance -> {
-                    if (newBalance < 0) {
-                        return TransactionResponse.failure(BankResult.DATABASE_ERROR);
-                    }
+                    return db().updateBalanceAtomic(targetUuid, -actualAmount).thenApply(newBalance -> {
+                        if (newBalance < 0) return TransactionResponse.failure(BankResult.DATABASE_ERROR);
 
-                    TransactionLog log = TransactionLog.adminAction(
-                            targetUuid, targetName, TransactionLog.TransactionType.ADMIN_TAKE,
-                            actualAmount, previousBalance, newBalance, adminName, getServerId(), null);
-                    getDatabase().insertLog(log);
+                        commitAdminTransaction(targetUuid, targetName,
+                                TransactionLog.TransactionType.ADMIN_TAKE,
+                                actualAmount, prevBalance, newBalance, adminName);
 
-                    plugin.getDiscordWebhook().sendAdminAction(adminName, "TAKE", targetName, actualAmount);
-                    getRedisPubSub().publishBalanceUpdate(targetUuid, newBalance);
-
-                    firePostTransactionEvent(targetUuid, targetName,
-                            TransactionLog.TransactionType.ADMIN_TAKE, actualAmount, previousBalance, newBalance);
-
-                    return TransactionResponse.success(previousBalance, newBalance, actualAmount);
-                });
-            });
-        });
+                        return TransactionResponse.success(prevBalance, newBalance, actualAmount);
+                    });
+                })
+        );
     }
 
     public CompletableFuture<TransactionResponse> adminSet(UUID targetUuid, String targetName,
                                                            double amount, String adminName) {
-        return executeWithLock(targetUuid, () -> {
-            return getAccount(targetUuid).thenCompose(optAccount -> {
-                if (optAccount.isEmpty()) {
-                    return CompletableFuture.completedFuture(
-                            TransactionResponse.failure(BankResult.ACCOUNT_NOT_FOUND));
-                }
+        return executeWithLock(targetUuid, () ->
+                getAccount(targetUuid).thenCompose(opt -> {
+                    if (opt.isEmpty()) return fail(BankResult.ACCOUNT_NOT_FOUND);
 
-                BankAccount account = optAccount.get();
-                double previousBalance = account.getBalance();
+                    double prevBalance = opt.get().getBalance();
 
-                return getDatabase().setBalance(targetUuid, amount).thenApply(success -> {
-                    if (!success) {
-                        return TransactionResponse.failure(BankResult.DATABASE_ERROR);
-                    }
+                    return db().setBalance(targetUuid, amount).thenApply(success -> {
+                        if (!success) return TransactionResponse.failure(BankResult.DATABASE_ERROR);
 
-                    TransactionLog log = TransactionLog.adminAction(
-                            targetUuid, targetName, TransactionLog.TransactionType.ADMIN_SET,
-                            amount, previousBalance, amount, adminName, getServerId(), null);
-                    getDatabase().insertLog(log);
+                        commitAdminTransaction(targetUuid, targetName,
+                                TransactionLog.TransactionType.ADMIN_SET,
+                                amount, prevBalance, amount, adminName);
 
-                    plugin.getDiscordWebhook().sendAdminAction(adminName, "SET", targetName, amount);
-                    getRedisPubSub().publishBalanceUpdate(targetUuid, amount);
-
-                    firePostTransactionEvent(targetUuid, targetName,
-                            TransactionLog.TransactionType.ADMIN_SET, amount, previousBalance, amount);
-
-                    return TransactionResponse.success(previousBalance, amount, amount);
-                });
-            });
-        });
+                        return TransactionResponse.success(prevBalance, amount, amount);
+                    });
+                })
+        );
     }
 
     // ==================== History ====================
 
     public CompletableFuture<List<TransactionLog>> getHistory(UUID uuid, int limit) {
-        return getDatabase().getTransactionHistory(uuid, limit);
+        return db().getTransactionHistory(uuid, limit);
     }
 
-    // ==================== Utility Methods ====================
-
-    private boolean checkCooldown(UUID uuid) {
-        Player player = Bukkit.getPlayer(uuid);
-        if (player != null && player.hasPermission("vsrbank.bypass.cooldown")) {
-            return true;
-        }
-
-        Long lastTransaction = cooldowns.get(uuid);
-        if (lastTransaction == null) {
-            return true;
-        }
-
-        long cooldownMs = plugin.getConfigManager().getConfig().getTransaction().getCooldownMs();
-        return System.currentTimeMillis() - lastTransaction >= cooldownMs;
-    }
-
-    private void setCooldown(UUID uuid) {
-        cooldowns.put(uuid, System.currentTimeMillis());
-    }
-
-    public double getRemainingCooldown(UUID uuid) {
-        Long lastTransaction = cooldowns.get(uuid);
-        if (lastTransaction == null) {
-            return 0;
-        }
-
-        long cooldownMs = plugin.getConfigManager().getConfig().getTransaction().getCooldownMs();
-        long remaining = cooldownMs - (System.currentTimeMillis() - lastTransaction);
-        return Math.max(0, remaining / 1000.0);
-    }
+    // ==================== Locking Infrastructure ====================
 
     @SuppressWarnings("unchecked")
-    private <T> CompletableFuture<T> executeWithLock(UUID uuid, java.util.function.Supplier<CompletableFuture<T>> operation) {
+    private <T> CompletableFuture<T> executeWithLock(UUID uuid,
+                                                     java.util.function.Supplier<CompletableFuture<T>> operation) {
         RedisLockService lockService = plugin.getRedisLockService();
 
-        if (!plugin.getRedisManager().isConnected()) {
+        if (lockService == null || plugin.getRedisManager() == null || !plugin.getRedisManager().isConnected()) {
             return operation.get();
         }
 
         return lockService.withLockAsync(uuid, 5, TimeUnit.SECONDS, operation)
-                .exceptionally(error -> {
-                    // Lock failed
-                    return (T) TransactionResponse.failure(BankResult.TRANSACTION_LOCKED);
+                .handle((result, error) -> {
+                    if (error != null) {
+                        if (error.getCause() instanceof TimeoutException || error.getMessage().contains("lock")) {
+                            return (T) TransactionResponse.failure(BankResult.TRANSACTION_LOCKED);
+                        }
+                        plugin.getLogger().severe("Internal Transaction Error for " + uuid + ": " + error.getMessage());
+                        error.printStackTrace();
+                        return (T) TransactionResponse.failure(BankResult.DATABASE_ERROR);
+                    }
+                    return result;
                 });
     }
 
-    private <T> CompletableFuture<T> withTimeout(CompletableFuture<T> future, long timeout, TimeUnit unit) {
-        return future.orTimeout(timeout, unit)
-                .exceptionally(ex -> {
-                    if (ex instanceof TimeoutException) {
-                        plugin.getLogger().warning("Operation timed out after " + timeout + " " + unit);
+    @SuppressWarnings("unchecked")
+    private <T> CompletableFuture<T> executeWithDualLock(UUID uuid1, UUID uuid2,
+                                                         java.util.function.Supplier<CompletableFuture<T>> operation) {
+        RedisLockService lockService = plugin.getRedisLockService();
+
+        if (lockService == null || plugin.getRedisManager() == null || !plugin.getRedisManager().isConnected()) {
+            return operation.get();
+        }
+
+        UUID firstLock = uuid1.compareTo(uuid2) < 0 ? uuid1 : uuid2;
+        UUID secondLock = uuid1.compareTo(uuid2) < 0 ? uuid2 : uuid1;
+
+        return lockService.withLockAsync(firstLock, 5, TimeUnit.SECONDS, () ->
+                lockService.withLockAsync(secondLock, 5, TimeUnit.SECONDS, operation).toCompletableFuture()
+        ).exceptionally(error -> (T) TransactionResponse.failure(BankResult.TRANSACTION_LOCKED));
+    }
+
+    private <T> CompletableFuture<T> supplyAsyncMain(java.util.function.Supplier<T> supplier) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            try {
+                future.complete(supplier.get());
+            } catch (Throwable e) {
+                future.completeExceptionally(e);
+            }
+        });
+        return future;
+    }
+
+    public CompletableFuture<Boolean> applyInterestSafe(UUID uuid, double interest, double maxBalance) {
+        return executeWithLock(uuid, () ->
+                getAccount(uuid).thenCompose(opt -> {
+                    if (opt.isEmpty()) return CompletableFuture.completedFuture(false);
+
+                    BankAccount account = opt.get();
+                    double currentBalance = account.getBalance();
+
+                    double finalInterest = interest;
+                    if (maxBalance >= 0) {
+                        finalInterest = Math.min(interest, Math.max(0, maxBalance - currentBalance));
+                        if (finalInterest <= 0) {
+                            return CompletableFuture.completedFuture(false);
+                        }
                     }
-                    throw new CompletionException(ex);
-                });
+
+                    double actualInterest = finalInterest;
+                    return db().updateBalanceAtomic(uuid, actualInterest).thenApply(newBalance -> {
+                        if (newBalance < 0) return false;
+
+                        commitTransaction(uuid, account.getPlayerName(),
+                                TransactionLog.TransactionType.INTEREST,
+                                actualInterest, currentBalance, newBalance,
+                                "Interest payment");
+
+                        return true;
+                    });
+                })
+        );
     }
 }
