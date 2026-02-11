@@ -42,7 +42,17 @@ public class BankGuiConfig {
     public static class PlayerHeadSection {
         @Comment("Slot position (optional)")
         private Integer slot = 4;
+        private List<Integer> slots = new ArrayList<>();
 
+        public List<Integer> getEffectiveSlots() {
+            if (slots != null && !slots.isEmpty()) {
+                return slots;
+            }
+            if (slot != null && slot != -1) {
+                return List.of(slot);
+            }
+            return java.util.Collections.emptyList();
+        }
         @Comment("Display format (optional)")
         private String nameFormat = "<gold><bold>%player%'s Account</bold></gold>";
 

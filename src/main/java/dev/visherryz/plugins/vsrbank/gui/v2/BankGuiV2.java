@@ -11,10 +11,11 @@ import dev.visherryz.plugins.vsrbank.model.BankAccount;
 import org.bukkit.entity.Player;
 
 import java.text.DecimalFormat;
+import java.util.List;
 import java.util.Map;
 
 /**
- * New BankGui implementation using type-based config system
+ * Bank GUI V2 — supports multi-slot buttons via getEffectiveSlots()
  */
 public class BankGuiV2 {
 
@@ -65,10 +66,13 @@ public class BankGuiV2 {
     private void setupPlayerHead(Player player, BankAccount account, Gui gui, BankGuiConfig config) {
         var section = config.getPlayerHead();
 
-        if (section.getSlot() == null || section.getSlot() == -1) {
+        // 1. เช็คว่ามีช่องที่ต้องวางไอเทมไหม (รองรับทั้ง slot และ slots)
+        List<Integer> effectiveSlots = section.getEffectiveSlots();
+        if (effectiveSlots.isEmpty()) {
             return;
         }
 
+        // 2. เตรียมข้อมูล Placeholders
         var tier = plugin.getConfigManager().getConfig().getTier(account.getTier());
         var maxBalance = tier.getMaxBalance();
 
@@ -80,6 +84,7 @@ public class BankGuiV2 {
                 .add("interest", String.format("%.2fx", tier.getInterestMultiplier()))
                 .build();
 
+        // 3. สร้างไอเทม Head
         var head = buttonBuilder.buildPlayerHead(
                 player,
                 section.getNameFormat(),
@@ -88,15 +93,20 @@ public class BankGuiV2 {
                 section.getCustomModelData()
         );
 
-        gui.setItem(section.getSlot(), new GuiItem(head));
+        // 4. วนลูปวางไอเทมลงในทุกช่องที่กำหนดไว้
+        for (int s : effectiveSlots) {
+            gui.setItem(s, new GuiItem(head));
+        }
     }
 
     private void setupTransactionSection(Player player, BankAccount account, Gui gui,
                                          BankGuiConfig.TransactionSection section, boolean isDeposit) {
-        // Label - check slot before adding
-        if (section.getLabel().getSlot() != -1) {
+        // Label — multi-slot
+        if (section.getLabel() != null && section.getLabel().isVisible()) {
             GuiItem label = buttonBuilder.buildButton(section.getLabel(), account);
-            gui.setItem(section.getLabel().getSlot(), label);
+            for (int s : section.getLabel().getEffectiveSlots()) {
+                gui.setItem(s, label);
+            }
         }
 
         // Preset buttons
@@ -109,14 +119,16 @@ public class BankGuiV2 {
             gui.setItem(slots.get(i), item);
         }
 
-        // Custom amount - check slot before adding
-        if (section.getCustomButton().getSlot() != -1) {
+        // Custom amount — multi-slot
+        if (section.getCustomButton() != null && section.getCustomButton().isVisible()) {
             GuiItem custom = buttonBuilder.buildButton(section.getCustomButton(), account);
-            gui.setItem(section.getCustomButton().getSlot(), custom);
+            for (int s : section.getCustomButton().getEffectiveSlots()) {
+                gui.setItem(s, custom);
+            }
         }
 
-        // All in/out - check slot before adding
-        if (section.getAllButton().getSlot() != -1) {
+        // All in/out — multi-slot
+        if (section.getAllButton() != null && section.getAllButton().isVisible()) {
             double allAmount = isDeposit ?
                     plugin.getVaultHook().getEconomy().getBalance(player) :
                     account.getBalance();
@@ -127,11 +139,13 @@ public class BankGuiV2 {
             );
 
             GuiItem all = buttonBuilder.buildButton(section.getAllButton(), account, placeholders);
-            gui.setItem(section.getAllButton().getSlot(), all);
+            for (int s : section.getAllButton().getEffectiveSlots()) {
+                gui.setItem(s, all);
+            }
         }
 
-        // Half button - check slot before adding
-        if (section.getHalfButton() != null && section.getHalfButton().getSlot() != -1) {
+        // Half button — multi-slot
+        if (section.getHalfButton() != null && section.getHalfButton().isVisible()) {
             double sourceAmount = isDeposit ?
                     plugin.getVaultHook().getEconomy().getBalance(player) :
                     account.getBalance();
@@ -144,14 +158,16 @@ public class BankGuiV2 {
             );
 
             GuiItem half = buttonBuilder.buildButton(section.getHalfButton(), account, placeholders);
-            gui.setItem(section.getHalfButton().getSlot(), half);
+            for (int s : section.getHalfButton().getEffectiveSlots()) {
+                gui.setItem(s, half);
+            }
         }
     }
 
     private void setupButtons(Player player, BankAccount account, Gui gui, BankGuiConfig config) {
         for (ButtonConfig btnConfig : config.getButtons()) {
-            // Skip if slot is -1 (hidden button)
-            if (btnConfig.getSlot() == -1) {
+            // Skip hidden buttons
+            if (btnConfig.isHidden()) {
                 continue;
             }
 
@@ -161,7 +177,11 @@ public class BankGuiV2 {
             }
 
             GuiItem item = buttonBuilder.buildButton(btnConfig, account);
-            gui.setItem(btnConfig.getSlot(), item);
+
+            // Place on all effective slots
+            for (int s : btnConfig.getEffectiveSlots()) {
+                gui.setItem(s, item);
+            }
         }
     }
 

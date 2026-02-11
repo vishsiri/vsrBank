@@ -17,6 +17,8 @@ import java.util.logging.Level;
 /**
  * Redis Pub/Sub Service
  * Handles all messaging operations
+ *
+ * FIX #4: handleBalanceUpdate invalidate local cache ผ่าน DatabaseProvider.invalidateCache()
  */
 @RequiredArgsConstructor
 public class RedisPubSubService {
@@ -34,7 +36,6 @@ public class RedisPubSubService {
         BankConfig config = plugin.getConfigManager().getConfig();
         String clusterId = config.getRedis().getClusterId();
 
-        // Default to serverId if clusterId is empty
         if (clusterId == null || clusterId.isEmpty()) {
             clusterId = config.getServerId();
         }
@@ -54,11 +55,9 @@ public class RedisPubSubService {
         String currentServerId = plugin.getConfigManager().getConfig().getServerId();
         String balanceTopicName = getBalanceTopic();
 
-        // ✅ Use SerializationCodec instead of JsonJacksonCodec
         balanceTopic = redisManager.getRedisson().getTopic(balanceTopicName, new SerializationCodec());
         balanceListenerId = balanceTopic.addListener(BalanceUpdateMessage.class,
                 (channel, message) -> {
-                    // Ignore messages from this server
                     if (currentServerId.equals(message.sourceServer)) {
                         return;
                     }
@@ -114,7 +113,6 @@ public class RedisPubSubService {
 
         CompletableFuture.runAsync(() -> {
             try {
-                // ✅ Use SerializationCodec
                 RTopic topic = redisManager.getRedisson().getTopic(channel, new SerializationCodec());
                 topic.publishAsync(message);
             } catch (Exception e) {
@@ -131,7 +129,6 @@ public class RedisPubSubService {
             throw new IllegalStateException("Redis not connected");
         }
 
-        // ✅ Use SerializationCodec
         RTopic topic = redisManager.getRedisson().getTopic(channel, new SerializationCodec());
         return topic.addListener(messageType, listener);
     }
@@ -150,26 +147,31 @@ public class RedisPubSubService {
 
     /**
      * Handle balance update from another server
+     *
+     * FIX #4: Invalidate local cache via DatabaseProvider.invalidateCache()
+     *         เผื่ออนาคตมี cache layer จะได้ไม่ stale
      */
     private void handleBalanceUpdate(BalanceUpdateMessage message) {
         UUID playerUuid = message.playerUuid;
         double newBalance = message.newBalance;
 
+        // Invalidate local cache (no-op for current AbstractSQLProvider,
+        // but will work automatically if a caching provider is added later)
+        plugin.getDatabaseManager().getProvider().invalidateCache(playerUuid);
+
+        // Notify player on main thread if online
         Bukkit.getScheduler().runTask(plugin, () -> {
             Player player = Bukkit.getPlayer(playerUuid);
             if (player != null && player.isOnline()) {
                 plugin.getLogger().fine("Received balance update from " + message.sourceServer +
                         " for " + player.getName() + ": " + newBalance);
-
-                // Optional: Notify player
-                // plugin.getMessageUtil().send(player, "Your balance was updated on another server!");
             }
         });
     }
 
     /**
      * Balance update message for pub/sub
-     * ✅ Must implement Serializable for SerializationCodec
+     * Must implement Serializable for SerializationCodec
      */
     public static class BalanceUpdateMessage implements Serializable {
         private static final long serialVersionUID = 1L;

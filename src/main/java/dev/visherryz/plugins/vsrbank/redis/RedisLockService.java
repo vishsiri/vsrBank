@@ -15,6 +15,10 @@ import java.util.logging.Level;
 /**
  * Redis Distributed Lock Service
  * Handles all lock operations
+ *
+ * FIX #3: แยก unlock สำหรับ sync vs async
+ *   - sync (withLock): ใช้ isHeldByCurrentThread() ได้เพราะ lock/unlock อยู่ thread เดียว
+ *   - async (withLockAsync): ใช้ forceUnlockAsync() เพราะ whenComplete อาจรันคนละ thread
  */
 @RequiredArgsConstructor
 public class RedisLockService {
@@ -55,7 +59,8 @@ public class RedisLockService {
     }
 
     /**
-     * Execute operation with automatic lock management
+     * Execute operation with automatic lock management (sync version)
+     * Lock/unlock อยู่ thread เดียวกัน → ใช้ isHeldByCurrentThread() ได้
      */
     public <T> CompletableFuture<T> withLock(UUID playerUuid, Supplier<T> operation) {
         BankConfig.RedisSettings settings = plugin.getConfigManager().getConfig().getRedis();
@@ -67,7 +72,7 @@ public class RedisLockService {
                     try {
                         return operation.get();
                     } finally {
-                        unlockSafely(lock, playerUuid);
+                        unlockSyncSafely(lock, playerUuid);
                     }
                 } else {
                     throw new RuntimeException("Failed to acquire lock for " + playerUuid);
@@ -80,7 +85,8 @@ public class RedisLockService {
     }
 
     /**
-     * Execute operation with automatic lock and timeout (async)
+     * Execute operation with automatic lock and timeout (async version)
+     * FIX #3: ใช้ forceUnlockAsync() แทน isHeldByCurrentThread()
      */
     public <T> CompletableFuture<T> withLockAsync(UUID playerUuid, long timeout, TimeUnit unit,
                                                   Supplier<CompletableFuture<T>> operation) {
@@ -99,23 +105,46 @@ public class RedisLockService {
 
                     return operation.get()
                             .whenComplete((result, error) -> {
-                                unlockSafely(lock, playerUuid);
+                                // FIX: ใช้ forceUnlockAsync เพราะ callback อาจรันคนละ thread
+                                unlockAsyncSafely(lock, playerUuid);
                             });
                 });
     }
 
     /**
-     * Safely unlock with logging
+     * Safely unlock for SYNC operations (same thread guaranteed)
      */
-    private void unlockSafely(RLock lock, UUID playerUuid) {
+    private void unlockSyncSafely(RLock lock, UUID playerUuid) {
         try {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
-                plugin.getLogger().fine("Lock released for player " + playerUuid);
+                plugin.getLogger().fine("Lock released (sync) for player " + playerUuid);
             }
         } catch (Exception e) {
             plugin.getLogger().log(Level.WARNING,
-                    "Failed to unlock for player " + playerUuid, e);
+                    "Failed to unlock (sync) for player " + playerUuid, e);
+        }
+    }
+
+    /**
+     * Safely unlock for ASYNC operations (may be on different thread)
+     * ใช้ forceUnlockAsync() เพราะ callback อาจรันคนละ thread กับที่ acquire lock
+     */
+    private void unlockAsyncSafely(RLock lock, UUID playerUuid) {
+        try {
+            if (lock.isLocked()) {
+                lock.forceUnlockAsync().whenComplete((result, error) -> {
+                    if (error != null) {
+                        plugin.getLogger().log(Level.WARNING,
+                                "Failed to force-unlock (async) for player " + playerUuid, error);
+                    } else {
+                        plugin.getLogger().fine("Lock released (async) for player " + playerUuid);
+                    }
+                });
+            }
+        } catch (Exception e) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Failed to unlock (async) for player " + playerUuid, e);
         }
     }
 }

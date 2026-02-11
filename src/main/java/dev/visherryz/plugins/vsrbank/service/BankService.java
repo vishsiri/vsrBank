@@ -13,6 +13,7 @@ import lombok.RequiredArgsConstructor;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
+import org.redisson.api.RBucket;
 
 import java.time.Instant;
 import java.util.List;
@@ -24,6 +25,10 @@ import java.util.concurrent.*;
 /**
  * Core Bank Service - handles all banking business logic
  * Refactored: ใช้ helper methods ลด boilerplate ของ log/event/publish pipeline
+ *
+ * Fixes applied:
+ *   #1 — Cooldown ย้ายไป Redis (cross-server) + local fallback
+ *   #2 — Events เป็น Paper @Async events → fire บน async thread (เดิมถูกอยู่แล้ว)
  */
 @RequiredArgsConstructor
 public class BankService {
@@ -31,7 +36,9 @@ public class BankService {
     private final VsrBank plugin;
     private final TierRequirementService tierRequirementService;
 
-    private final Map<UUID, Long> cooldowns = new ConcurrentHashMap<>();
+    // ==================== FIX #1: Cooldown - Redis primary, local fallback ====================
+    private final Map<UUID, Long> localCooldowns = new ConcurrentHashMap<>();
+    private static final String COOLDOWN_PREFIX = "vsrbank:cooldown:";
 
     // ==================== Accessors ====================
 
@@ -89,7 +96,7 @@ public class BankService {
         // 2. Redis publish
         publishBalanceUpdate(uuid, newBalance);
 
-        // 3. Post-event
+        // 3. Post-event (async event — fire on current async thread)
         firePostTransactionEvent(uuid, playerName, type, amount, prevBalance, newBalance);
     }
 
@@ -110,7 +117,7 @@ public class BankService {
     }
 
     /**
-     * Quick fail helper — ลดการเขียน CompletableFuture.completedFuture ซ้ำๆ
+     * Quick fail helper
      */
     private CompletableFuture<TransactionResponse> fail(BankResult result) {
         return CompletableFuture.completedFuture(TransactionResponse.failure(result));
@@ -125,6 +132,10 @@ public class BankService {
     }
 
     // ==================== Event Helpers ====================
+    // NOTE: BankPreTransactionEvent, BankPostTransactionEvent, BankLevelUpEvent
+    //       are Paper @Async events — they MUST be fired on async threads.
+    //       Since the entire transaction pipeline runs inside CompletableFuture chains
+    //       (async threads), calling them directly here is correct.
 
     private boolean isTransactionCancelled(UUID uuid, String playerName,
                                            TransactionLog.TransactionType type,
@@ -156,17 +167,38 @@ public class BankService {
         }
     }
 
-    // ==================== Cooldown ====================
+    // ==================== FIX #1: Cooldown ย้ายไป Redis ====================
 
     public void clearCooldown(UUID uuid) {
-        cooldowns.remove(uuid);
+        localCooldowns.remove(uuid);
+        if (isRedisAvailable()) {
+            try {
+                plugin.getRedisManager().getRedisson()
+                        .getBucket(COOLDOWN_PREFIX + uuid.toString()).deleteAsync();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public double getRemainingCooldown(UUID uuid) {
-        Long last = cooldowns.get(uuid);
-        if (last == null) return 0;
-
         long cooldownMs = config().getTransaction().getCooldownMs();
+
+        if (isRedisAvailable()) {
+            try {
+                RBucket<Long> bucket = plugin.getRedisManager().getRedisson()
+                        .getBucket(COOLDOWN_PREFIX + uuid.toString());
+                Long lastTime = bucket.get();
+                if (lastTime != null) {
+                    long remaining = cooldownMs - (System.currentTimeMillis() - lastTime);
+                    return Math.max(0, remaining / 1000.0);
+                }
+                return 0;
+            } catch (Exception ignored) {
+            }
+        }
+
+        Long last = localCooldowns.get(uuid);
+        if (last == null) return 0;
         long remaining = cooldownMs - (System.currentTimeMillis() - last);
         return Math.max(0, remaining / 1000.0);
     }
@@ -180,8 +212,28 @@ public class BankService {
         long now = System.currentTimeMillis();
         long cooldownMs = config().getTransaction().getCooldownMs();
 
+        // Redis first → cross-server cooldown
+        if (isRedisAvailable()) {
+            try {
+                RBucket<Long> bucket = plugin.getRedisManager().getRedisson()
+                        .getBucket(COOLDOWN_PREFIX + uuid.toString());
+                Long lastTime = bucket.get();
+
+                if (lastTime != null && (now - lastTime) < cooldownMs) {
+                    return false;
+                }
+
+                // Set with auto-expire (cooldown + 1s buffer)
+                bucket.set(now, cooldownMs + 1000, TimeUnit.MILLISECONDS);
+                return true;
+            } catch (Exception e) {
+                plugin.getLogger().warning("Redis cooldown failed, using local fallback: " + e.getMessage());
+            }
+        }
+
+        // Local fallback
         boolean[] allowed = {false};
-        cooldowns.compute(uuid, (key, last) -> {
+        localCooldowns.compute(uuid, (key, last) -> {
             if (last == null || (now - last) >= cooldownMs) {
                 allowed[0] = true;
                 return now;
@@ -189,6 +241,10 @@ public class BankService {
             return last;
         });
         return allowed[0];
+    }
+
+    private boolean isRedisAvailable() {
+        return plugin.getRedisManager() != null && plugin.getRedisManager().isConnected();
     }
 
     // ==================== Account Management ====================
@@ -333,31 +389,26 @@ public class BankService {
                     return db().updateBalanceAtomic(uuid, -amount).thenCompose(newBalance -> {
                         if (newBalance < 0) {
                             plugin.getLogger().severe(String.format(
-                                    "CRITICAL: Withdraw balance went negative! UUID=%s, Prev=%.2f, Amount=%.2f, New=%.2f",
+                                    "CRITICAL: Withdraw balance negative! UUID=%s, Prev=%.2f, Amount=%.2f, New=%.2f",
                                     uuid, prevBalance, amount, newBalance));
                             db().setBalance(uuid, prevBalance);
-                            clearCooldown(uuid);
-                            return fail(BankResult.INSUFFICIENT_BANK_BALANCE);
+                            return fail(BankResult.DATABASE_ERROR);
                         }
 
                         return CompletableFuture.supplyAsync(() ->
                                 eco.depositPlayer(player, amount).transactionSuccess()
-                        ).thenCompose(vaultOk -> {
+                        ).thenApply(vaultOk -> {
                             if (!vaultOk) {
-                                return db().updateBalanceAtomic(uuid, amount).thenApply(rollback -> {
-                                    plugin.getLogger().warning("Withdraw Vault deposit failed for " +
-                                            player.getName() + ", rolled back to " + rollback);
-                                    clearCooldown(uuid);
-                                    return TransactionResponse.failure(BankResult.VAULT_TRANSACTION_FAILED);
-                                });
+                                db().updateBalanceAtomic(uuid, amount);
+                                return TransactionResponse.failure(BankResult.VAULT_TRANSACTION_FAILED);
                             }
 
                             commitTransaction(uuid, player.getName(),
                                     TransactionLog.TransactionType.WITHDRAW,
                                     amount, prevBalance, newBalance,
-                                    reason != null ? reason : "Withdrawal");
+                                    reason != null ? reason : "Withdraw");
 
-                            return succeed(prevBalance, newBalance, amount);
+                            return TransactionResponse.success(prevBalance, newBalance, amount);
                         });
                     });
                 })
@@ -373,10 +424,7 @@ public class BankService {
         UUID senderUuid = sender.getUniqueId();
         BankConfig.TransactionSettings tx = config().getTransaction();
 
-        // Pre-validation
         if (amount <= 0) return fail(BankResult.INVALID_AMOUNT);
-        if (amount < tx.getMinTransferAmount()) return fail(BankResult.BELOW_MINIMUM);
-        if (tx.getMaxTransferAmount() > 0 && amount > tx.getMaxTransferAmount()) return fail(BankResult.ABOVE_MAXIMUM);
         if (!checkAndSetCooldown(senderUuid)) return fail(BankResult.COOLDOWN_ACTIVE);
 
         double fee = amount * tx.getTransferFeePercent();
@@ -634,7 +682,7 @@ public class BankService {
                                                      java.util.function.Supplier<CompletableFuture<T>> operation) {
         RedisLockService lockService = plugin.getRedisLockService();
 
-        if (lockService == null || plugin.getRedisManager() == null || !plugin.getRedisManager().isConnected()) {
+        if (lockService == null || !isRedisAvailable()) {
             return operation.get();
         }
 
@@ -657,7 +705,7 @@ public class BankService {
                                                          java.util.function.Supplier<CompletableFuture<T>> operation) {
         RedisLockService lockService = plugin.getRedisLockService();
 
-        if (lockService == null || plugin.getRedisManager() == null || !plugin.getRedisManager().isConnected()) {
+        if (lockService == null || !isRedisAvailable()) {
             return operation.get();
         }
 

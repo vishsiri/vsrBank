@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * History GUI V2 - Using new config system
+ * History GUI V2 — supports multi-slot buttons
  */
 public class HistoryGuiV2 {
 
@@ -65,10 +65,12 @@ public class HistoryGuiV2 {
 
         // Transaction logs
         if (logs.isEmpty()) {
-            // Only show empty item if slot is configured
-            if (config.getEmptyItem().getSlot() != -1) {
-                gui.setItem(config.getEmptyItem().getSlot(),
-                        buttonBuilder.buildButton(config.getEmptyItem(), null));
+            // Show empty item on all effective slots
+            if (config.getEmptyItem().isVisible()) {
+                GuiItem emptyItem = buttonBuilder.buildButton(config.getEmptyItem(), null);
+                for (int s : config.getEmptyItem().getEffectiveSlots()) {
+                    gui.setItem(s, emptyItem);
+                }
             }
         } else {
             for (TransactionLog log : logs) {
@@ -104,7 +106,6 @@ public class HistoryGuiV2 {
         placeholders.put("date", log.getFormattedDate());
         placeholders.put("target", hasTarget ? log.getTargetName() : "");
 
-        // Build target line only if target exists
         if (hasTarget) {
             String targetLine = replacePlaceholders(format.getTargetLineFormat(), placeholders);
             placeholders.put("target_line", targetLine);
@@ -115,17 +116,14 @@ public class HistoryGuiV2 {
                         color + log.getType().getIcon() + " " + log.getType().getDisplayName()
                 ));
 
-        // Build lore - check raw line BEFORE replacing placeholders
         if (format.getLore() != null && !format.getLore().isEmpty()) {
             List<net.kyori.adventure.text.Component> loreComponents = new ArrayList<>();
 
             for (String rawLine : format.getLore()) {
-                // If this line is the target_line placeholder, skip entirely when no target
                 if (rawLine.trim().equals("%target_line%")) {
                     if (!hasTarget) {
                         continue;
                     }
-                    // Has target - replace and add
                     String processed = replacePlaceholders(rawLine, placeholders);
                     if (!processed.isEmpty()) {
                         loreComponents.add(plugin.getMessageUtil().parse(processed));
@@ -133,7 +131,6 @@ public class HistoryGuiV2 {
                     continue;
                 }
 
-                // Normal line - replace placeholders and add
                 String processed = replacePlaceholders(rawLine, placeholders);
                 if (!processed.isEmpty()) {
                     loreComponents.add(plugin.getMessageUtil().parse(processed));
@@ -143,7 +140,6 @@ public class HistoryGuiV2 {
             builder.lore(loreComponents);
         }
 
-        // CustomModelData support
         Integer customModelData = format.getCustomModelData(log.getType());
         if (customModelData != null && customModelData > 0) {
             builder.model(customModelData);
@@ -154,8 +150,8 @@ public class HistoryGuiV2 {
 
     private void setupButtons(Player player, PaginatedGui gui, HistoryGuiConfig config) {
         for (var btnConfig : config.getButtons()) {
-            // Skip if slot is -1 (hidden button)
-            if (btnConfig.getSlot() == -1) {
+            // Skip hidden buttons
+            if (btnConfig.isHidden()) {
                 continue;
             }
 
@@ -181,7 +177,10 @@ public class HistoryGuiV2 {
                 }
             }
 
-            gui.setItem(btnConfig.getSlot(), item);
+            // Place on all effective slots
+            for (int s : btnConfig.getEffectiveSlots()) {
+                gui.setItem(s, item);
+            }
         }
     }
 

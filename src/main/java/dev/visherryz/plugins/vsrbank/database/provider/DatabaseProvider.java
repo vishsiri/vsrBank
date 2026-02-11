@@ -131,4 +131,23 @@ public interface DatabaseProvider {
      * Get database type name
      */
     String getDatabaseType();
+
+    // ==================== Cache (Cross-Server Support) ====================
+
+    /**
+     * Invalidate any local cache for a player's account data.
+     * Called by RedisPubSubService when another server updates a player's balance.
+     *
+     * Default implementation is no-op (suitable for providers that read directly from DB
+     * without caching, like the current AbstractSQLProvider).
+     *
+     * Override this if your provider implements a local cache layer.
+     *
+     * @param uuid The player UUID whose cached data should be invalidated
+     */
+    default void invalidateCache(UUID uuid) {
+        // No-op — AbstractSQLProvider reads directly from DB every time,
+        // so there's nothing to invalidate.
+        // Override this if you add a caching layer in the future.
+    }
 }

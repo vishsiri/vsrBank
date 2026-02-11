@@ -16,7 +16,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Upgrade GUI V2 - Using new config system
+ * Upgrade GUI V2 — supports multi-slot buttons
  */
 public class UpgradeGuiV2 {
 
@@ -41,7 +41,6 @@ public class UpgradeGuiV2 {
 
         int nextTier = account.getTier() + 1;
 
-        // Check if can upgrade
         if (nextTier > bankConfig.getMaxTier()) {
             new BankGuiV2(plugin).open(player);
             return;
@@ -59,13 +58,13 @@ public class UpgradeGuiV2 {
         // Filler
         gui.getFiller().fill(buttonBuilder.buildFiller(config.getFiller()));
 
-        // Info item - only show if slot is configured
+        // Info item
         if (config.getInfoDisplay().getSlot() != -1) {
             gui.setItem(config.getInfoDisplay().getSlot(),
                     buildInfoItem(nextTierSettings, config.getInfoDisplay()));
         }
 
-        // Setup buttons
+        // Setup buttons — multi-slot
         setupButtons(player, gui, config, nextTierSettings);
 
         gui.open(player);
@@ -103,8 +102,8 @@ public class UpgradeGuiV2 {
     private void setupButtons(Player player, Gui gui, UpgradeGuiConfig config,
                               BankConfig.TierSettings nextTierSettings) {
         for (var btnConfig : config.getButtons()) {
-            // Skip if slot is -1 (hidden button)
-            if (btnConfig.getSlot() == -1) {
+            // Skip hidden buttons
+            if (btnConfig.isHidden()) {
                 continue;
             }
 
@@ -113,7 +112,6 @@ public class UpgradeGuiV2 {
             // Handle confirm button specially
             if (btnConfig.getType() == dev.visherryz.plugins.vsrbank.gui.common.ButtonConfig.ButtonType.CONFIRM) {
                 item = buttonBuilder.buildButton(btnConfig, account);
-                // Override action
                 item.setAction(event -> {
                     Player p = (Player) event.getWhoClicked();
                     if (plugin.canClick(p)) {
@@ -126,7 +124,10 @@ public class UpgradeGuiV2 {
                 item = buttonBuilder.buildButton(btnConfig, account);
             }
 
-            gui.setItem(btnConfig.getSlot(), item);
+            // Place on all effective slots
+            for (int s : btnConfig.getEffectiveSlots()) {
+                gui.setItem(s, item);
+            }
         }
     }
 

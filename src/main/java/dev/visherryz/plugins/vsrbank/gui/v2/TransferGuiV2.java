@@ -17,7 +17,7 @@ import java.util.Collection;
 import java.util.Map;
 
 /**
- * Transfer GUI V2 - Using new config system
+ * Transfer GUI V2 — supports multi-slot buttons
  */
 public class TransferGuiV2 {
 
@@ -59,21 +59,20 @@ public class TransferGuiV2 {
         // Filler
         gui.getFiller().fill(buttonBuilder.buildFiller(config.getFiller()));
 
-        // Balance info
+        // Balance info — multi-slot
         setupBalanceInfo(player, account, gui, config);
 
         // Online players
         setupOnlinePlayers(player, gui, config);
 
-        // Custom buttons
+        // Custom buttons — multi-slot
         setupButtons(player, account, gui, config);
 
         gui.open(player);
     }
 
     private void setupBalanceInfo(Player player, BankAccount account, Gui gui, TransferGuiConfig config) {
-        // Only show balance info if slot is configured
-        if (config.getBalanceInfo().getSlot() == -1) {
+        if (config.getBalanceInfo().isHidden()) {
             return;
         }
 
@@ -82,7 +81,10 @@ public class TransferGuiV2 {
                 .build();
 
         GuiItem infoItem = buttonBuilder.buildButton(config.getBalanceInfo(), account, placeholders);
-        gui.setItem(config.getBalanceInfo().getSlot(), infoItem);
+
+        for (int s : config.getBalanceInfo().getEffectiveSlots()) {
+            gui.setItem(s, infoItem);
+        }
     }
 
     private void setupOnlinePlayers(Player player, Gui gui, TransferGuiConfig config) {
@@ -91,17 +93,14 @@ public class TransferGuiV2 {
         int slotIndex = 0;
 
         for (Player target : onlinePlayers) {
-            // Skip self
             if (target.getUniqueId().equals(player.getUniqueId())) {
                 continue;
             }
 
-            // Check if we have slots left
             if (slotIndex >= playerSlots.size()) {
                 break;
             }
 
-            // Create player head
             ItemStack playerHead = buttonBuilder.buildPlayerHead(
                     target,
                     config.getPlayerHeadDisplay().getNameFormat(),
@@ -130,13 +129,15 @@ public class TransferGuiV2 {
 
     private void setupButtons(Player player, BankAccount account, Gui gui, TransferGuiConfig config) {
         for (var btnConfig : config.getButtons()) {
-            // Skip if slot is -1 (hidden button)
-            if (btnConfig.getSlot() == -1) {
+            if (btnConfig.isHidden()) {
                 continue;
             }
 
             GuiItem item = buttonBuilder.buildButton(btnConfig, account);
-            gui.setItem(btnConfig.getSlot(), item);
+
+            for (int s : btnConfig.getEffectiveSlots()) {
+                gui.setItem(s, item);
+            }
         }
     }
 
